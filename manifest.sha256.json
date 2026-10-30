@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "files": {
+    "notifier.py": "4e19297735f107ffafcb74d81b49109240764286f8ed00121dea461a0dcbd91e",
+    "install_notifier.py": "3cb81774d5187741df642a7e74f8bed3037ecd7d9f17e16106189f5ede5c6d56",
+    "Install.ps1": "a8a4dbc78075f5ab88cb76e59ff201cbcbae1d954ef99cb009c1f9e39779c028",
+    "保存授权码.ps1": "8b6a6c188fe995b2654901e99389a0cfec130195fd1583925d3036e77175f2d5",
+    "settings.example.json": "c633b1f95144c63a28fcc59a199269cec72f06ea1222fdac45fb85dc38aee91e",
+    "tests/test_notifier.py": "315bbd329bc8b3f182b50f3cc344523ee8e4a6ac553d61ef3a0e446167c91f70",
+    "tests/test_install_notifier.py": "e83ef23a31594290377d63db368ca003cdc642fa1542b28095cc94fe15266248",
+    "AGENTS.md": "9d410bfc8587c390bbfdd982dfd598ea9c1d7111c329be97e4ddfb89aaa97b6d",
+    "START_HERE.md": "c18064a4f11d41a3b616e58b4a83a8b7f334ca6cf8682dba4fcae9190748e561",
+    "README.md": "6109040ebcadfb62cb8df5748ae8cde3601b338b097bbeb5340056abdb191fc5",
+    "Codex邮件通知器使用与迁移说明.md": "de3c41047357095f6b76420926228bae827afd979c0d9145f261f0d3992d38f3"
+  }
+}

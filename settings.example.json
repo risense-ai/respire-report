@@ -1,0 +1,17 @@
+{
+  "mode": "auto",
+  "idle_seconds": 300,
+  "sessions": [],
+  "smtp_host": "",
+  "smtp_port": 465,
+  "smtp_security": "ssl",
+  "sender": "",
+  "recipient": "",
+  "include_message": true,
+  "retention_days": 30,
+  "stalled_seconds": 1800,
+  "quiet_enabled": true,
+  "quiet_start": "23:00",
+  "quiet_end": "07:30",
+  "include_question": true
+}

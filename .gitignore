@@ -1,0 +1,30 @@
+# Private runtime configuration and Windows DPAPI credentials.
+/settings.json
+/settings.tmp
+/smtp.credential.xml
+*.credential.xml
+/.env
+/.env.*
+
+# Runtime queue, diagnostics and process locks.
+/events.db
+/events.db-journal
+/events.db-wal
+/events.db-shm
+/hook-diagnostics.jsonl
+/worker.lock
+/watchdog.lock
+
+# Installer backups, temporary replacements and local shortcuts/packages.
+/backups/
+/dist/
+*.bak-*
+.notifier-install-*
+/通知设置.lnk
+/*.zip
+/*.zip.sha256
+
+# Python and test caches. Keep settings.example.json tracked.
+__pycache__/
+*.py[cod]
+.pytest_cache/

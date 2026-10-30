@@ -1,0 +1,2 @@
+# Keep package bytes stable across Windows checkouts for manifest validation.
+* text=auto eol=lf
