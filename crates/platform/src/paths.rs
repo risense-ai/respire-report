@@ -66,7 +66,9 @@ fn discover_windows() -> Result<PlatformPaths> {
     let profile = std::env::var_os("USERPROFILE").map(PathBuf::from).ok_or(PlatformError("profile_unavailable"))?.join("AgentNotify");
     let mut candidates = vec![profile.clone(), local];
     let output = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command",
-        "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $t=Get-ScheduledTask -TaskName ('AgentNotify.'+$sid) -ErrorAction SilentlyContinue; if($t){if(@($t.Actions).Count-ne 1){exit 4}; $t.Actions[0].WorkingDirectory | ConvertTo-Json -Compress}"])
+        // 任务不存在时 Get-ScheduledTask 会把 $? 置否，powershell.exe 随之以 1 退出；
+        // 未安装属正常态，故显式 exit 0，仅多动作歧义（exit 4）保持失败。
+        "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $t=Get-ScheduledTask -TaskName ('AgentNotify.'+$sid) -ErrorAction SilentlyContinue; if($t){if(@($t.Actions).Count-ne 1){exit 4}; $t.Actions[0].WorkingDirectory | ConvertTo-Json -Compress}; exit 0"])
         .stdin(Stdio::null()).stderr(Stdio::null()).stdout(Stdio::piped()).creation_flags(0x08000000).output()
         .map_err(|_| PlatformError("installation_discovery_failed"))?;
     if !output.status.success() || output.stdout.len() > 32768 { return Err(PlatformError("installation_discovery_failed")); }
