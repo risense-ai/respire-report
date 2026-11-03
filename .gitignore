@@ -16,3 +16,6 @@ settings.json
 
 # Optional machine-local source build paths (no credentials).
 .build.local.json
+
+# Vite dependency cache produced by the desktop dev server.
+**/.vite/
