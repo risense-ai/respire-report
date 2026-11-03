@@ -1,0 +1,61 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running tests\feasibility\credential_real.rs (target\debug\deps\credential_real-c2cdb58baa097447.exe)
+
+thread 'credential_real_roundtrip' (29328) panicked at tests\feasibility\credential_real.rs:3:53:
+native credential backend must write/read/delete a random entry: "native credential probe not implemented"
+
+running 1 test
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test credential_real_roundtrip ... FAILED
+
+failures:
+
+failures:
+    credential_real_roundtrip
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test credential_real`
+     Running tests\feasibility\service_real.rs (target\debug\deps\service_real-ec3a5618b72ade28.exe)
+
+running 1 test
+
+thread 'service_gui_independence' (40532) panicked at tests\feasibility\service_real.rs:3:53:
+user launch entry must create a process independent from launcher and GUI: "independent process probe not implemented"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test service_gui_independence ... FAILED
+
+failures:
+
+failures:
+    service_gui_independence
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test service_real`
+     Running tests\feasibility\smtp_local.rs (target\debug\deps\smtp_local-a1e591b457142b9d.exe)
+
+running 2 tests
+
+thread 'smtp_data_stage_observable' (49584) panicked at tests\feasibility\smtp_local.rs:8:49:
+durable DATA marker must precede DATA and survive ambiguous result: "durable SMTP DATA stage probe not implemented"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'smtp_local_tls_probe' (52612) panicked at tests\feasibility\smtp_local.rs:3:47:
+trusted CA succeeds; untrusted CA and STARTTLS downgrade fail closed: "local SMTP TLS probe not implemented"
+test smtp_data_stage_observable ... FAILED
+test smtp_local_tls_probe ... FAILED
+
+failures:
+
+failures:
+    smtp_data_stage_observable
+    smtp_local_tls_probe
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test smtp_local`
+error: 3 targets failed:
+    `--test credential_real`
+    `--test service_real`
+    `--test smtp_local`

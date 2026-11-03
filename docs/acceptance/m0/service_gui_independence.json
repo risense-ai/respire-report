@@ -1,0 +1,13 @@
+{
+  "probe": "service_gui_independence",
+  "os_build": "Windows NT 10.0.26300.9711 (DisplayVersion=26H2)",
+  "backend": "Windows detached current-user process",
+  "dependency_version": "Rust std=1.95.0",
+  "features": [
+    "DETACHED_PROCESS",
+    "CREATE_NEW_PROCESS_GROUP"
+  ],
+  "actual": "launcher exited; unique worker subsequently completed with GUI absent; no installed service or login task",
+  "evidence": "service_gui_independence.json",
+  "status": "passed"
+}

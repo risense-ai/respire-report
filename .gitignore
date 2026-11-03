@@ -1,0 +1,18 @@
+/target/
+**/node_modules/
+**/dist/
+.superpowers/
+*.log
+.env
+.env.*
+!.env.example
+/runtime/
+/test-artifacts/
+*.credential.xml
+settings.json
+*.db
+*.db-shm
+*.db-wal
+
+# Optional machine-local source build paths (no credentials).
+.build.local.json

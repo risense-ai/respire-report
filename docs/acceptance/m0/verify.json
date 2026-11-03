@@ -1,0 +1,75 @@
+{
+  "mode": "Verify",
+  "platform": "Windows",
+  "os_build": "Windows NT 10.0.26300.9711 (DisplayVersion=26H2)",
+  "tools": {
+    "pnpm": "11.25.0",
+    "node": "v24.21.0",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+  },
+  "native_tools": {
+    "cl_in_current_path": false,
+    "vcvars_override_available": true,
+    "sdk_registry_available": true
+  },
+  "webview2": "156.0.4314.50",
+  "probes": [
+    {
+      "probe": "credential_real_roundtrip",
+      "os_build": "Windows NT 10.0.26300.9711 (DisplayVersion=26H2)",
+      "backend": "Windows Credential Manager / WinCredential",
+      "dependency_version": "keyring=3.6.3",
+      "features": [
+        "windows-native",
+        "default-features=false"
+      ],
+      "actual": "random binary test entry wrote/read/deleted; NoEntry verified; secret never logged",
+      "evidence": "credential_real_roundtrip.json",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "probe": "service_gui_independence",
+      "os_build": "Windows NT 10.0.26300.9711 (DisplayVersion=26H2)",
+      "backend": "Windows detached current-user process",
+      "dependency_version": "Rust std=1.95.0",
+      "features": [
+        "DETACHED_PROCESS",
+        "CREATE_NEW_PROCESS_GROUP"
+      ],
+      "actual": "launcher exited; unique worker subsequently completed with GUI absent; no installed service or login task",
+      "evidence": "service_gui_independence.json",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "probe": "smtp_local_tls_probe",
+      "os_build": "Windows NT 10.0.26300.9711 (DisplayVersion=26H2)",
+      "backend": "loopback SMTP STARTTLS / rustls",
+      "dependency_version": "rustls=0.23.46; rcgen=0.14.5",
+      "features": [
+        "std",
+        "ring",
+        "tls12"
+      ],
+      "actual": "trusted ephemeral CA accepted; untrusted CA rejected before envelope; missing STARTTLS rejected; no external mail",
+      "evidence": "smtp_local_tls_probe.json",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "probe": "smtp_data_stage_observable",
+      "os_build": "Windows NT 10.0.26300.9711 (DisplayVersion=26H2)",
+      "backend": "auditable SMTP stage experiment + synced file",
+      "dependency_version": "rustls=0.23.46",
+      "features": [
+        "sync_all before DATA"
+      ],
+      "actual": "server read durable data_started before DATA acknowledgement; failed persistence prevented DATA; post-body disconnect classified uncertain; no retry loop",
+      "evidence": "smtp_data_stage_observable.json",
+      "status": "passed",
+      "exit_code": 0
+    }
+  ]
+}

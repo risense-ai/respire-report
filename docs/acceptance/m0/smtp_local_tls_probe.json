@@ -1,0 +1,14 @@
+{
+  "probe": "smtp_local_tls_probe",
+  "os_build": "Windows NT 10.0.26300.9711 (DisplayVersion=26H2)",
+  "backend": "loopback SMTP STARTTLS / rustls",
+  "dependency_version": "rustls=0.23.46; rcgen=0.14.5",
+  "features": [
+    "std",
+    "ring",
+    "tls12"
+  ],
+  "actual": "trusted ephemeral CA accepted; untrusted CA rejected before envelope; missing STARTTLS rejected; no external mail",
+  "evidence": "smtp_local_tls_probe.json",
+  "status": "passed"
+}

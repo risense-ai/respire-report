@@ -1,0 +1,54 @@
+{
+  "mode": "Baseline",
+  "platform": "Windows",
+  "os_build": "Microsoft Windows NT 10.0.26300.0",
+  "tools": {
+    "node": "v24.21.0",
+    "pnpm": "11.25.0",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+  },
+  "webview2": "156.0.4314.50",
+  "probes": [
+    {
+      "probe": "credential_real_roundtrip",
+      "os_build": "Microsoft Windows NT 10.0.26300.0",
+      "backend": "none",
+      "dependency_version": "none",
+      "features": [],
+      "actual": "Baseline: no capability accepted before experiment",
+      "evidence": "baseline.json",
+      "status": "not_run"
+    },
+    {
+      "probe": "smtp_local_tls_probe",
+      "os_build": "Microsoft Windows NT 10.0.26300.0",
+      "backend": "none",
+      "dependency_version": "none",
+      "features": [],
+      "actual": "Baseline: no capability accepted before experiment",
+      "evidence": "baseline.json",
+      "status": "not_run"
+    },
+    {
+      "probe": "smtp_data_stage_observable",
+      "os_build": "Microsoft Windows NT 10.0.26300.0",
+      "backend": "none",
+      "dependency_version": "none",
+      "features": [],
+      "actual": "Baseline: no capability accepted before experiment",
+      "evidence": "baseline.json",
+      "status": "not_run"
+    },
+    {
+      "probe": "service_gui_independence",
+      "os_build": "Microsoft Windows NT 10.0.26300.0",
+      "backend": "none",
+      "dependency_version": "none",
+      "features": [],
+      "actual": "Baseline: no capability accepted before experiment",
+      "evidence": "baseline.json",
+      "status": "not_run"
+    }
+  ]
+}

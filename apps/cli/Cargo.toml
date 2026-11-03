@@ -1,0 +1,25 @@
+[package]
+name = "agentnotify-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agentnotify"
+path = "src/main.rs"
+
+[dependencies]
+agentnotify-core = { path = "../../crates/core" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.150"
+uuid = { version = "=1.28.0", features = ["v4", "serde"] }
+agentnotify-platform = { path = "../../crates/platform" }
+agentnotify-adapters = { path = "../../crates/adapters" }
+agentnotify-integration = { path = "../../crates/integration" }
+agentnotify-agent-support = { path = "../../crates/agent_support" }
+chrono = { version = "=0.4.42", features = ["serde"] }
+
+zeroize = "=1.9.1"
+tempfile = "=3.27.0"
+rusqlite = { version = "=0.32.1", features = ["bundled"] }

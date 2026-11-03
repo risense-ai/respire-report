@@ -1,0 +1,23 @@
+[package]
+name = "agentnotify-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+agentnotify-core = { path = "../core" }
+uuid = { version = "=1.28.0", features = ["v4"] }
+ring = "=0.17.14"
+zeroize = "=1.9.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.150"
+chrono = "=0.4.42"
+iana-time-zone = "=0.1.65"
+sha2 = "=0.10.9"
+base64 = "=0.22.1"
+tempfile = "=3.27.0"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_Security_Cryptography", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Memory", "Win32_System_Com", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_WindowsProgramming", "Win32_System_Power", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_RemoteDesktop", "Win32_System_StationsAndDesktops", "Win32_UI_Input_KeyboardAndMouse"] }

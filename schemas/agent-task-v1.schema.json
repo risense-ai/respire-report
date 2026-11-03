@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentnotify.local/schemas/agent-task-v1.schema.json",
+  "title": "AgentNotify AgentTaskV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scenario", "mode", "target_instances", "allowed_changes", "intent_source", "execution_budget"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "scenario": { "enum": ["install", "repair", "migrate_machine", "audit", "upgrade_restore"] },
+    "mode": { "enum": ["design_review", "read_only", "apply_authorized"] },
+    "target_instances": { "type": "array", "maxItems": 16, "items": { "type": "string", "format": "uuid" } },
+    "allowed_changes": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/allowed_change" } },
+    "intent_source": { "$ref": "#/$defs/intent_source" },
+    "execution_budget": { "type": "object", "additionalProperties": false, "required": ["max_steps", "max_minutes"], "properties": { "max_steps": { "type": "integer", "minimum": 1, "maximum": 100 }, "max_minutes": { "type": "integer", "minimum": 1, "maximum": 240 } } },
+    "test_send": { "$ref": "#/$defs/test_send" },
+    "constraints": { "type": "array", "items": { "enum": ["no_client_restart", "no_trust_bypass", "no_bulk_delete", "no_security_policy_change", "no_unapproved_send", "preserve_other_hooks"] } },
+    "hide_local_paths": { "type": "boolean", "default": false }
+  },
+  "$defs": {
+    "intent_source": { "enum": ["current_user_request", "trusted_local_ui", "unverified_attachment"] },
+    "allowed_change": { "type": "object", "additionalProperties": false, "required": ["kind", "instance_id"], "properties": { "kind": { "enum": ["install_owned_service", "merge_owned_hook", "repair_owned_entry", "disable_owned_source_entry", "upgrade_owned_binary", "restore_owned_change"] }, "instance_id": { "type": "string", "format": "uuid" } } },
+    "test_send": { "type": "object", "additionalProperties": false, "required": ["allowed", "authorization_source", "recipient_ref", "max_attempts", "expires_at", "consumed"], "properties": { "allowed": { "type": "boolean", "default": false }, "authorization_source": { "oneOf": [{ "$ref": "#/$defs/intent_source" }, { "type": "null" }] }, "recipient_ref": { "oneOf": [{ "type": "string", "format": "uuid" }, { "type": "null" }] }, "max_attempts": { "type": "integer", "minimum": 0, "maximum": 1 }, "expires_at": { "oneOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] }, "consumed": { "type": "boolean" } } }
+  }
+}

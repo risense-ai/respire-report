@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/adapters", "crates/platform", "crates/integration", "crates/agent_support", "apps/cli", "apps/daemon", "apps/desktop/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+
+[package]
+name = "agentnotify-feasibility"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "tests/feasibility/support/mod.rs"
+
+[[test]]
+name = "credential_real"
+path = "tests/feasibility/credential_real.rs"
+
+[[test]]
+name = "service_real"
+path = "tests/feasibility/service_real.rs"
+
+[[test]]
+name = "smtp_local"
+path = "tests/feasibility/smtp_local.rs"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.150"
+uuid = { version = "=1.28.0", features = ["v4"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "ring", "tls12"] }
+rcgen = { version = "=0.14.5", default-features = false, features = ["crypto", "ring"] }
+tempfile = "=3.27.0"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }

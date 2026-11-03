@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConfigV1",
+  "description": "新装隐私默认关闭正文；迁移必须显式保留原选择，不用本默认值覆盖。",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "include_answer": {
+      "type": "boolean"
+    },
+    "include_question": {
+      "type": "boolean"
+    },
+    "metadata_retention_days": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "policy": {
+      "$ref": "#/$defs/NotificationRules",
+      "default": {
+        "aggregate_finishes": true,
+        "notify_attention": false,
+        "notify_subagents": true,
+        "suppress_internal_success": true
+      }
+    },
+    "presence": {
+      "$ref": "#/$defs/PresenceConfig",
+      "default": {
+        "idle_seconds": 300,
+        "mode": "always"
+      }
+    },
+    "queue_ttl_hours": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "quiet": {
+      "$ref": "#/$defs/QuietConfig"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint8",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "watchdog": {
+      "$ref": "#/$defs/WatchdogConfig"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "enabled",
+    "include_question",
+    "include_answer",
+    "quiet",
+    "metadata_retention_days",
+    "queue_ttl_hours",
+    "watchdog"
+  ],
+  "$defs": {
+    "NotificationRules": {
+      "description": "中立用户规则；旧配置缺省时采用新装默认，原有字段保持原值。",
+      "type": "object",
+      "properties": {
+        "aggregate_finishes": {
+          "description": "正常结束聚合；关闭时仍等待3秒。",
+          "type": "boolean"
+        },
+        "notify_attention": {
+          "description": "等待输入/批准默认关闭。",
+          "type": "boolean"
+        },
+        "notify_subagents": {
+          "description": "子代理默认保留，不依据正文猜测来源。",
+          "type": "boolean"
+        },
+        "suppress_internal_success": {
+          "description": "已核验内部后台且成功证据同时成立才允许过滤。",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "aggregate_finishes",
+        "suppress_internal_success",
+        "notify_subagents",
+        "notify_attention"
+      ]
+    },
+    "PresenceConfig": {
+      "type": "object",
+      "properties": {
+        "idle_seconds": {
+          "description": "最近输入距今的秒数；锁屏无需等到该阈值。",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/PresenceMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "idle_seconds"
+      ]
+    },
+    "PresenceMode": {
+      "description": "通知发送条件；AwayOnly复用旧Windows离席/锁屏语义。",
+      "type": "string",
+      "enum": [
+        "always",
+        "away_only"
+      ]
+    },
+    "QuietBehavior": {
+      "description": "静默区间行为；默认跳过，不在早晨突发补发。",
+      "type": "string",
+      "enum": [
+        "skip",
+        "digest"
+      ]
+    },
+    "QuietConfig": {
+      "type": "object",
+      "properties": {
+        "behavior": {
+          "$ref": "#/$defs/QuietBehavior"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "end": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "start",
+        "end",
+        "timezone",
+        "behavior"
+      ]
+    },
+    "WatchdogConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/$defs/WatchdogMode"
+        },
+        "threshold_seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 86400,
+          "minimum": 60
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "mode",
+        "threshold_seconds"
+      ]
+    },
+    "WatchdogMode": {
+      "description": "看门狗模式；inactivity必须具备可靠Progress能力。",
+      "type": "string",
+      "enum": [
+        "elapsed_without_finish",
+        "inactivity"
+      ]
+    }
+  }
+}

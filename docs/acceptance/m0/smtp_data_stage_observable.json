@@ -1,0 +1,12 @@
+{
+  "probe": "smtp_data_stage_observable",
+  "os_build": "Windows NT 10.0.26300.9711 (DisplayVersion=26H2)",
+  "backend": "auditable SMTP stage experiment + synced file",
+  "dependency_version": "rustls=0.23.46",
+  "features": [
+    "sync_all before DATA"
+  ],
+  "actual": "server read durable data_started before DATA acknowledgement; failed persistence prevented DATA; post-body disconnect classified uncertain; no retry loop",
+  "evidence": "smtp_data_stage_observable.json",
+  "status": "passed"
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "providers": [
+    {"id":"qq","smtp_host":"smtp.qq.com","port":465,"tls":"tls","availability":"conditional","condition":"开启第三方SMTP服务并完成官方验证，使用授权码，不使用登录密码。","oauth":null},
+    {"id":"163","smtp_host":"smtp.163.com","port":465,"tls":"tls","availability":"conditional","condition":"开启客户端SMTP协议，按账号要求验证并取得客户端授权码。","oauth":null},
+    {"id":"gmail","smtp_host":"smtp.gmail.com","port":465,"tls":"tls","availability":"conditional","condition":"已开启两步验证且账号实际提供应用密码；组织策略、安全密钥或Advanced Protection可能禁止。","oauth":null},
+    {"id":"outlook","smtp_host":"smtp-mail.outlook.com","port":587,"tls":"starttls","availability":"unavailable","condition":"需要发布者已注册公共桌面OAuth应用；尚未提供真实client_id，不能授权。","oauth":null},
+    {"id":"microsoft365","smtp_host":"smtp.office365.com","port":587,"tls":"starttls","availability":"unavailable","condition":"需要发布者OAuth应用、组织许可及SMTP AUTH能力；尚未提供注册资料。","oauth":null}
+  ]
+}

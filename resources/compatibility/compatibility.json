@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "adapter_id": "codex",
+      "product": "Codex Desktop bundled CLI",
+      "version": "0.166.0-alpha.5.1",
+      "os": "windows",
+      "architecture": "x86_64",
+      "config_mode": "hooks_json",
+      "events": ["Stop", "Interrupt", "SubagentStart", "SubagentStop", "SessionEnd"],
+      "metadata": "official_hook_fields_only",
+      "evidence_level": "documented_and_local_binary_schema_not_live_verified",
+      "evidence_date": "2026-10-30",
+      "references": ["https://learn.chatgpt.com/docs/hooks", "docs/acceptance/m4-integrations.md"]
+    },
+    {
+      "adapter_id": "codex",
+      "product": "Codex plugin helper CLI",
+      "version": "0.165.0-alpha.1.2",
+      "os": "windows",
+      "architecture": "x86_64",
+      "config_mode": "hooks_json",
+      "events": ["Stop", "Interrupt", "SubagentStart", "SubagentStop", "SessionEnd"],
+      "metadata": "official_hook_fields_only",
+      "evidence_level": "documented_and_local_binary_schema_not_live_verified",
+      "evidence_date": "2026-10-30",
+      "references": ["https://learn.chatgpt.com/docs/hooks", "docs/acceptance/m4-integrations.md"]
+    },
+    {
+      "adapter_id": "claude_code",
+      "product": "Claude Code",
+      "version": "2.1.295",
+      "os": "windows",
+      "architecture": "x86_64",
+      "config_mode": "settings_json",
+      "events": ["Stop", "SubagentStart", "SubagentStop", "StopFailure", "SessionEnd"],
+      "metadata": "official_hook_fields_only",
+      "evidence_level": "official_documented_version_not_local_installed_or_live_verified",
+      "evidence_date": "2026-11-02",
+      "references": ["https://code.claude.com/docs/en/hooks"]
+    }
+  ],
+  "pending": [
+    {"adapter_id":"workbuddy","status":"research_pending","reason":"No formal lifecycle or versioned Hook contract confirmed"},
+    {"adapter_id":"claude_chat","status":"unsupported","reason":"Claude Chat is not Claude Code"}
+  ]
+}

@@ -1,0 +1,1131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IngressEnvelopeV1",
+  "description": "DB和spool唯一共同输入；序号为空必须显示order_unknown诊断。",
+  "type": "object",
+  "properties": {
+    "adapter_output": {
+      "$ref": "#/$defs/AdapterOutput"
+    },
+    "ingress_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "per_instance_sequence": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "default": null,
+      "maximum": 9007199254740991,
+      "minimum": 0
+    },
+    "presence_suppressed": {
+      "description": "接收时本机离席策略的抑制决定；true不可因晚导入或改配置复活。旧spool缺失按false兼容。",
+      "type": "boolean",
+      "default": false
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint8",
+      "maximum": 1,
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ingress_id",
+    "received_at",
+    "adapter_output"
+  ],
+  "$defs": {
+    "ActivityKey": {
+      "description": "仅可靠actor及可证轮次/generation用于看门狗；调用前必须校验。",
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/ActorKey"
+        },
+        "turn": {
+          "$ref": "#/$defs/TurnKey"
+        }
+      },
+      "required": [
+        "actor",
+        "turn"
+      ]
+    },
+    "ActorKey": {
+      "description": "后续generation/取消/聚合共用键；Unknown按接收单元隔离。",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "instance_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "scope": {
+              "type": "string",
+              "const": "main"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "scope",
+            "instance_id",
+            "session_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "actor_id": {
+              "type": "string"
+            },
+            "instance_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "scope": {
+              "type": "string",
+              "const": "identified"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "scope",
+            "instance_id",
+            "session_id",
+            "actor_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ingress_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "scope": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "scope",
+            "ingress_id"
+          ]
+        }
+      ]
+    },
+    "ActorScope": {
+      "description": "执行主体范围；未知主体不得借父会话聚合或取消其他主体。",
+      "type": "string",
+      "enum": [
+        "main",
+        "identified",
+        "unknown"
+      ]
+    },
+    "AdapterOutput": {
+      "description": "一个接收单元的通知、生命周期及共同证据，不允许双份来源漂移。",
+      "type": "object",
+      "properties": {
+        "lifecycle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LifecycleSignal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notification": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NormalizedEventV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_evidence": {
+          "$ref": "#/$defs/SourceEvidence"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source_evidence"
+      ]
+    },
+    "AgentKind": {
+      "description": "上游代理角色；Unknown不能推断成内部后台。",
+      "type": "string",
+      "enum": [
+        "main",
+        "subagent",
+        "background",
+        "unknown"
+      ]
+    },
+    "BackgroundResult": {
+      "description": "后台结果证据；Unknown/Other不可默认静默。",
+      "type": "string",
+      "enum": [
+        "success",
+        "other",
+        "unknown"
+      ]
+    },
+    "BackgroundState": {
+      "description": "上游剩余后台任务信息；Pending/Unknown不表示全部结束。",
+      "type": "string",
+      "enum": [
+        "none",
+        "pending",
+        "unknown"
+      ]
+    },
+    "CommandError": {
+      "description": "结构化命令错误；message必须来自受控诊断，不回显参数/正文。",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "CommandReport": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HealthReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 1,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "ok"
+      ]
+    },
+    "CompletionBasis": {
+      "description": "完成证据；普通Stop只能使用ResponseStop。",
+      "type": "string",
+      "enum": [
+        "response_stop",
+        "explicit_task_event",
+        "explicit_caller_report",
+        "none"
+      ]
+    },
+    "CredentialError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/CredentialErrorCode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ]
+    },
+    "CredentialErrorCode": {
+      "description": "平台凭据错误只返回受控原因，不输出系统错误详情或秘密。",
+      "type": "string",
+      "enum": [
+        "missing",
+        "locked",
+        "access_denied",
+        "unavailable",
+        "write_failed",
+        "readback_failed"
+      ]
+    },
+    "CredentialRef": {
+      "description": "本机安全存储的随机条目引用，不包含邮箱地址或任何秘密值。",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "CredentialStatus": {
+      "description": "凭据状态为白名单，不导出账号、授权码或后端错误详情。",
+      "type": "string",
+      "enum": [
+        "ready",
+        "missing",
+        "locked",
+        "access_denied",
+        "unavailable",
+        "unknown"
+      ]
+    },
+    "DaemonStatus": {
+      "description": "健康报告仅描述后台观察结果，不混同GUI窗口状态。",
+      "type": "string",
+      "enum": [
+        "running",
+        "stopped",
+        "unavailable",
+        "unknown"
+      ]
+    },
+    "DeliveryOutcome": {
+      "description": "Accepted仅表示SMTP接受，Uncertain默认不可自动重发，不隐含收件人确认。",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "message_id": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "const": "accepted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "message_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "const": "retryable"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "const": "auth_blocked"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "const": "permanent_failure"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "uncertain"
+            },
+            "stage": {
+              "$ref": "#/$defs/SendStage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "stage"
+          ]
+        }
+      ]
+    },
+    "EnqueueOutcome": {
+      "description": "仅真正持久化后返回；三者id都指接收单元而非邮件。",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "type": "string",
+              "const": "queued"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "type": "string",
+              "const": "duplicate"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "type": "string",
+              "const": "spooled"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "id"
+          ]
+        }
+      ]
+    },
+    "EventKind": {
+      "description": "六种通知语义；响应结束不代表业务验收成功。",
+      "type": "string",
+      "enum": [
+        "response_finished",
+        "attention_required",
+        "execution_failed",
+        "interrupted",
+        "task_completed",
+        "stalled"
+      ]
+    },
+    "HealthIssue": {
+      "description": "只准使用脱敏受控文案，禁止装载原始日志、配置或凭据。",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "HealthReport": {
+      "description": "doctor及UI共用白名单DTO；本轮没有把未实现后端伪装为健康。",
+      "type": "object",
+      "properties": {
+        "credential_status": {
+          "$ref": "#/$defs/CredentialStatus"
+        },
+        "daemon": {
+          "$ref": "#/$defs/DaemonStatus"
+        },
+        "integrations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IntegrationHealth"
+          }
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HealthIssue"
+          }
+        },
+        "queue_counts": {
+          "$ref": "#/$defs/QueueCounts"
+        },
+        "schema_version": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 1,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "daemon",
+        "queue_counts",
+        "credential_status",
+        "integrations",
+        "issues"
+      ]
+    },
+    "IntegrationHealth": {
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/IntegrationStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "adapter_id",
+        "status"
+      ]
+    },
+    "IntegrationStatus": {
+      "description": "接入状态描述证据阶段，配置存在不代表真实接入通过。",
+      "type": "string",
+      "enum": [
+        "not_detected",
+        "detected",
+        "unsupported_version",
+        "research_pending",
+        "configured",
+        "trust_pending",
+        "reload_pending",
+        "probe_passed",
+        "live_verified",
+        "degraded"
+      ]
+    },
+    "IntegrationTransitionError": {
+      "description": "统一拒绝非法升级；报告只含受控状态，不携带客户端配置。",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/$defs/IntegrationStatus"
+        },
+        "to": {
+          "$ref": "#/$defs/IntegrationStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "from",
+        "to"
+      ]
+    },
+    "LifecycleKind": {
+      "description": "生命周期不产生完成通知；SessionClosed仅关闭会话活动。",
+      "type": "string",
+      "enum": [
+        "started",
+        "progress",
+        "resumed",
+        "session_closed"
+      ]
+    },
+    "LifecycleSignal": {
+      "description": "生命周期的actor字段与通知使用同一枚举，不生成虚构轮次。",
+      "type": "object",
+      "properties": {
+        "actor_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actor_scope": {
+          "$ref": "#/$defs/ActorScope"
+        },
+        "instance_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/LifecycleKind"
+        },
+        "received_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "session_id",
+        "actor_scope",
+        "kind",
+        "received_at"
+      ]
+    },
+    "NormalizedEventV1": {
+      "description": "中立通知；正文是短暂输入，落盘前必须经过privacy并由存储层加密。",
+      "type": "object",
+      "properties": {
+        "actor_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "actor_scope": {
+          "$ref": "#/$defs/ActorScope",
+          "default": "unknown"
+        },
+        "adapter_id": {
+          "description": "已登记适配器标签；不作为可信来源证明。",
+          "type": "string"
+        },
+        "agent_kind": {
+          "$ref": "#/$defs/AgentKind",
+          "default": "unknown"
+        },
+        "answer": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "background_state": {
+          "$ref": "#/$defs/BackgroundState",
+          "default": "unknown"
+        },
+        "completion_basis": {
+          "$ref": "#/$defs/CompletionBasis"
+        },
+        "event_id": {
+          "description": "上游可证稳定事件ID；缺失保持null，不用时间伪造。",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "instance_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/EventKind"
+        },
+        "parent_session_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "project_label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "question": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "received_at": {
+          "description": "由本机接收上下文提供，不能由外部输入控制TTL。",
+          "type": "string",
+          "format": "date-time"
+        },
+        "resume_url": {
+          "description": "仅适配器有官方依据时设置；generic禁止外部声明跳转链接。",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "schema_version": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 1,
+          "minimum": 1
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "session_label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "source_time": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "default": null
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "watchdog_detail": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WatchdogDetail"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "adapter_id",
+        "instance_id",
+        "kind",
+        "completion_basis",
+        "received_at"
+      ]
+    },
+    "OriginEvidence": {
+      "description": "分类证据强度；Generic只能生成CallerReported。",
+      "type": "string",
+      "enum": [
+        "verified_adapter",
+        "caller_reported",
+        "unknown"
+      ]
+    },
+    "PolicyDecision": {
+      "description": "策略只返回中立决策；证据必须由独立参数传入，不从来源标签推断。",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "notify"
+            },
+            "not_before": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "decision",
+            "not_before"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "suppress"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "decision",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "digest"
+            },
+            "window_key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "decision",
+            "window_key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "defer"
+            },
+            "until": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "decision",
+            "until"
+          ]
+        }
+      ]
+    },
+    "QueueCounts": {
+      "description": "十种队列状态对应的数量，u32可被UI无损表示，未知状态不能混入字典。",
+      "type": "object",
+      "properties": {
+        "auth_blocked": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "delivery_unknown": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "digest_pending": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "expired": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "leased": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "permanent_failed": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "queued": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "retry_wait": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sent": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "suppressed": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "queued",
+        "leased",
+        "sent",
+        "suppressed",
+        "digest_pending",
+        "retry_wait",
+        "auth_blocked",
+        "delivery_unknown",
+        "expired",
+        "permanent_failed"
+      ]
+    },
+    "QueueError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/QueueErrorCode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ]
+    },
+    "QueueErrorCode": {
+      "description": "入站/队列失败，区别于外部输入错误；不得携带原文、路径或存储错误详情。",
+      "type": "string",
+      "enum": [
+        "invalid_input",
+        "storage_unavailable",
+        "storage_failed",
+        "admission_timeout",
+        "queue_full",
+        "spool_full",
+        "body_protection_unavailable",
+        "unsupported_schema"
+      ]
+    },
+    "QueueStatus": {
+      "description": "投递状态；Sent仅表示SMTP接受，收件确认是独立证据。",
+      "type": "string",
+      "enum": [
+        "queued",
+        "leased",
+        "sent",
+        "suppressed",
+        "digest_pending",
+        "retry_wait",
+        "auth_blocked",
+        "delivery_unknown",
+        "expired",
+        "permanent_failed"
+      ]
+    },
+    "SendStage": {
+      "description": "DATA前必须持久化DataStarted；不能凭高层发送结果猜测阶段。",
+      "type": "string",
+      "enum": [
+        "prepared",
+        "connecting",
+        "envelope",
+        "data_started",
+        "accepted"
+      ]
+    },
+    "SourceClass": {
+      "description": "受控来源分类；来源标签本身不是证明。",
+      "type": "string",
+      "enum": [
+        "user",
+        "subagent",
+        "internal_background",
+        "unknown"
+      ]
+    },
+    "SourceEvidence": {
+      "description": "通知和纯生命周期共用的一份证据；诊断原因不参与信任判定。",
+      "type": "object",
+      "properties": {
+        "background_result": {
+          "$ref": "#/$defs/BackgroundResult"
+        },
+        "classification_reason": {
+          "type": "string"
+        },
+        "origin_evidence": {
+          "$ref": "#/$defs/OriginEvidence"
+        },
+        "source_class": {
+          "$ref": "#/$defs/SourceClass"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source_class",
+        "classification_reason",
+        "origin_evidence",
+        "background_result"
+      ]
+    },
+    "TurnKey": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "upstream"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "generation"
+            },
+            "value": {
+              "type": "integer",
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "WatchdogDetail": {
+      "description": "看门狗计时证据，只能由核心计时器生成；疑似状态不是卡死证明。",
+      "type": "object",
+      "properties": {
+        "elapsed_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0
+        },
+        "last_observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "mode": {
+          "$ref": "#/$defs/WatchdogMode"
+        },
+        "threshold_seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "threshold_seconds",
+        "elapsed_seconds",
+        "last_observed_at"
+      ]
+    },
+    "WatchdogMode": {
+      "description": "看门狗模式；inactivity必须具备可靠Progress能力。",
+      "type": "string",
+      "enum": [
+        "elapsed_without_finish",
+        "inactivity"
+      ]
+    }
+  }
+}

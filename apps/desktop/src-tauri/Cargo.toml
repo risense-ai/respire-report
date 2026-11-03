@@ -1,0 +1,38 @@
+[package]
+name = "agentnotify-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+name = "agentnotify_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "agentnotify-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = "=2.7.2"
+
+[dependencies]
+agentnotify-cli = { path = "../../cli" }
+agentnotifyd = { path = "../../daemon" }
+tauri = { version = "=2.12.3", features = ["tray-icon"] }
+agentnotify-core = { path = "../../../crates/core" }
+agentnotify-platform = { path = "../../../crates/platform" }
+agentnotify-integration = { path = "../../../crates/integration" }
+agentnotify-agent-support = { path = "../../../crates/agent_support" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.150"
+uuid = { version = "=1.28.0", features = ["v4", "serde"] }
+sha2 = "=0.10.9"
+tempfile = "=3.27.0"
+zeroize = "=1.9.1"
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
+chrono = "=0.4.42"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
