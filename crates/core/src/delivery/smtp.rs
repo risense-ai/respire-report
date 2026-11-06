@@ -450,6 +450,18 @@ pub fn deliver_lease(
     reference: &CredentialRef,
     clock: &dyn crate::clock::Clock,
 ) -> Result<DeliveryOutcome, QueueError> {
+    // 已撤销或旧版从未授权的来源保留历史状态，不建立 SMTP 连接。
+    match queue.lease_source_authorized(lease) {
+        Ok(true) => {}
+        Ok(false) => {
+            queue.complete_lease(lease, QueueStatus::PermanentFailed)?;
+            return Ok(permanent("source_not_authorized"));
+        }
+        Err(_) => {
+            queue.retry_temporary(lease, clock.now(), jitter())?;
+            return Ok(retry("source_verification_unavailable"));
+        }
+    }
     let credential_result = if smtp.auth == SmtpAuth::OAuth2 {
         super::oauth::access_token(
             store,

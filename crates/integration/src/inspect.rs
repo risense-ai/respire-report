@@ -26,6 +26,9 @@ fn capture(exe:&Path,args:&[&str])->Option<Vec<u8>> {
     let mut bytes=Vec::new();output.as_file_mut().take(65537).read_to_end(&mut bytes).ok()?;if bytes.len()>65536{return None;}Some(bytes)
 }
 fn version(exe:&Path,adapter:&str)->Option<String>{
+    if adapter == "workbuddy" {
+        return crate::workbuddy::version(exe);
+    }
     if !exe.is_absolute() || !exe.is_file() || exe.extension()?.to_str()?.to_ascii_lowercase()!="exe" {return None;}
     agentnotify_core::queue::reject_links(exe).ok()?;
     let raw=capture(exe,&["--version"])?;if raw.len()>512{return None;}
@@ -34,12 +37,26 @@ fn version(exe:&Path,adapter:&str)->Option<String>{
     text.split_whitespace().map(|s|s.trim_matches(|c:char|matches!(c,'('|')'|','))).find(|s|s.as_bytes().first().is_some_and(u8::is_ascii_digit)).map(str::to_owned)
 }
 fn candidates(adapter:&str)->Vec<PathBuf>{
-    let name=if adapter=="codex"{"codex.exe"}else{"claude.exe"};let mut paths=Vec::new();
+    let name=match adapter {"codex"=>"codex.exe","workbuddy"=>"WorkBuddy.exe",_=>"claude.exe"};let mut paths=Vec::new();
     if let Some(path)=env::var_os("PATH"){for part in env::split_paths(&path){let p=part.join(name);if p.is_absolute()&&p.is_file(){paths.push(p);}}}
     if let Some(profile)=env::var_os("USERPROFILE"){let p=PathBuf::from(profile).join(".local/bin").join(name);if p.is_file(){paths.push(p);}}
     #[cfg(windows)] {
-        // 官方桌面进程和Appx安装位置是候选证据；仍需逐个执行固定--version核实。
-        let script=if adapter=="codex" {"$p=@(Get-CimInstance Win32_Process -Filter \"Name='codex.exe'\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath); Get-AppxPackage '*Codex*' -ErrorAction SilentlyContinue | ForEach-Object { $r=$_.InstallLocation; foreach($s in @('app/resources/codex.exe','resources/codex.exe','codex.exe')) { $f=Join-Path $r $s; if(Test-Path -LiteralPath $f){$p+=$f} } }; @($p | Where-Object {$_} | Select-Object -Unique -First 16) | ConvertTo-Json -Compress"} else {"@(Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath -Unique -ErrorAction SilentlyContinue | Where-Object {$_} | Select-Object -First 16) | ConvertTo-Json -Compress"};
+        if adapter == "workbuddy" {
+            // 标准安装路径优先；自定义位置也可从运行进程、卸载登记或高级选项识别。
+            for key in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
+                if let Some(root) = env::var_os(key) {
+                    let root = PathBuf::from(root);
+                    for relative in ["WorkBuddy", "Programs/WorkBuddy", "Tencent/WorkBuddy"] {
+                        let candidate = root.join(relative).join(name);
+                        if candidate.is_file() { paths.push(candidate); }
+                    }
+                }
+            }
+        }
+        // 桌面进程和安装登记提供候选，随后验证产品与精确版本。
+        let script=if adapter=="workbuddy" {
+            "$p=@(Get-CimInstance Win32_Process -Filter \"Name='WorkBuddy.exe'\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath); foreach($key in @('HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall/*','HKLM:/Software/Microsoft/Windows/CurrentVersion/Uninstall/*','HKLM:/Software/WOW6432Node/Microsoft/Windows/CurrentVersion/Uninstall/*')) { Get-ItemProperty -Path $key -ErrorAction SilentlyContinue | Where-Object DisplayName -eq 'WorkBuddy' | ForEach-Object { if($_.InstallLocation){$p+=Join-Path $_.InstallLocation 'WorkBuddy.exe'} } }; @($p | Where-Object {$_ -and (Test-Path -LiteralPath $_ -PathType Leaf)} | Select-Object -Unique -First 16) | ConvertTo-Json -Compress"
+        } else if adapter=="codex" {"$p=@(Get-CimInstance Win32_Process -Filter \"Name='codex.exe'\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath); Get-AppxPackage '*Codex*' -ErrorAction SilentlyContinue | ForEach-Object { $r=$_.InstallLocation; foreach($s in @('app/resources/codex.exe','resources/codex.exe','codex.exe')) { $f=Join-Path $r $s; if(Test-Path -LiteralPath $f){$p+=$f} } }; @($p | Where-Object {$_} | Select-Object -Unique -First 16) | ConvertTo-Json -Compress"} else {"@(Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath -Unique -ErrorAction SilentlyContinue | Where-Object {$_} | Select-Object -First 16) | ConvertTo-Json -Compress"};
         if let Some(system)=env::var_os("SystemRoot"){if let Some(raw)=capture(&PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"),&["-NoProfile","-NonInteractive","-Command",script]) {if let Ok(value)=serde_json::from_slice::<serde_json::Value>(&raw){match value{serde_json::Value::String(s)=>paths.push(s.into()),serde_json::Value::Array(a)=>paths.extend(a.into_iter().filter_map(|v|v.as_str().map(PathBuf::from))),_=>{}}}}}
     }
     paths.sort();paths.dedup();paths.truncate(16);paths
@@ -47,11 +64,21 @@ fn candidates(adapter:&str)->Vec<PathBuf>{
 pub fn inspect(manager:&IntegrationManager)->InspectionReport{inspect_with(manager,&[])}
 pub fn inspect_with(manager:&IntegrationManager,overrides:&[DiscoveryOverride])->InspectionReport{
     let bindings=manager.bindings();let mut clients=Vec::new();
-    for adapter in ["codex","claude_code"] {
+    for adapter in ["codex","claude_code","workbuddy"] {
         let registered=bindings.as_ref().ok().map(|b|b.iter().filter(|b|b.adapter_id==adapter).collect::<Vec<_>>()).unwrap_or_default();
         let mut inputs:Vec<(PathBuf,Option<PathBuf>,Option<uuid::Uuid>)>=registered.iter().map(|b|(b.config_path.clone(),Some(b.client_executable.clone()),Some(b.instance_id))).collect();
         for o in overrides.iter().filter(|o|o.adapter_id==adapter){inputs.push((o.config_dir.join(if adapter=="codex"{"hooks.json"}else{"settings.json"}),o.executable.clone(),None));}
-        if inputs.is_empty(){let home=env::var_os(if adapter=="codex"{"CODEX_HOME"}else{"CLAUDE_CONFIG_DIR"}).map(PathBuf::from).or_else(||env::var_os("USERPROFILE").map(|p|PathBuf::from(p).join(if adapter=="codex"{".codex"}else{".claude"})));if let Some(home)=home {inputs.push((home.join(if adapter=="codex"{"hooks.json"}else{"settings.json"}),None,None));}}
+        if inputs.is_empty() {
+            // 配置目录由对应产品环境变量覆盖；WorkBuddy 不借用 Claude 或 CodeBuddy 的目录。
+            let (variable, default, file) = match adapter {
+                "codex" => ("CODEX_HOME", ".codex", "hooks.json"),
+                "workbuddy" => ("WORKBUDDY_CONFIG_DIR", ".workbuddy", "settings.json"),
+                _ => ("CLAUDE_CONFIG_DIR", ".claude", "settings.json"),
+            };
+            let home = env::var_os(variable).map(PathBuf::from)
+                .or_else(|| env::var_os("USERPROFILE").map(|path| PathBuf::from(path).join(default)));
+            if let Some(home) = home { inputs.push((home.join(file),None,None)); }
+        }
         let discovered=if inputs.iter().any(|(_,exe,_)|exe.is_none()){candidates(adapter)}else{Vec::new()};
         for (config,exe,id) in inputs {let choices=exe.map(|p|vec![Some(p)]).unwrap_or_else(||if discovered.is_empty(){vec![None]}else{discovered.iter().cloned().map(Some).collect()});
             for executable in choices {let version=executable.as_deref().and_then(|p|version(p,adapter));let supported=version.as_deref().is_some_and(|v|compatibility::find(adapter,v).is_ok());
@@ -65,6 +92,6 @@ pub fn inspect_with(manager:&IntegrationManager,overrides:&[DiscoveryOverride])-
             }
         }
     }
-    for (adapter,status,reason,channel) in [("generic",IntegrationStatus::Detected,"explicit_emit_only","explicit_emit"),("workbuddy",IntegrationStatus::ResearchPending,"formal_hook_contract_missing","unavailable")] {clients.push(InspectedClient{adapter_id:adapter.into(),config_path:None,status,reason:reason.into(),candidate_id:adapter.into(),instance_id:None,executable:None,version:None,supported:false,completion_channel:channel.into(),configured:false,event_count:0,last_event_at:None,smtp_accepted_count:0,live_verified:false});}
+    for (adapter,status,reason,channel) in [("generic",IntegrationStatus::Detected,"explicit_emit_only","explicit_emit")] {clients.push(InspectedClient{adapter_id:adapter.into(),config_path:None,status,reason:reason.into(),candidate_id:adapter.into(),instance_id:None,executable:None,version:None,supported:false,completion_channel:channel.into(),configured:false,event_count:0,last_event_at:None,smtp_accepted_count:0,live_verified:false});}
     InspectionReport{schema_version:1,clients,checked_at:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis().to_string()}
 }

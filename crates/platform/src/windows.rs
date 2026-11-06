@@ -338,3 +338,52 @@ impl DirectorySecurity for SecureDirectory {
         })
     }
 }
+
+/// 验证当前进程来自已登记的桌面程序进程树。只比较真实映像路径，不信任命令参数或环境。
+pub fn has_process_ancestor(expected_executable: &Path) -> bool {
+    use std::{collections::HashMap, mem::size_of};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+
+    // 1. 获取系统的进程父子关系。读取失败时拒绝入站。
+    let Ok(expected) = expected_executable.canonicalize() else { return false };
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE { return false; }
+    let snapshot = Handle(snapshot);
+    let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+    let mut parents = HashMap::new();
+    let mut found = unsafe { Process32FirstW(snapshot.0, &mut entry) };
+    while found != 0 {
+        parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+        found = unsafe { Process32NextW(snapshot.0, &mut entry) };
+    }
+
+    // 2. 只沿有限的真实父链匹配已登记程序，并用创建时间拒绝已重用的父 PID。
+    let mut pid = std::process::id();
+    let mut child_time = creation_time(unsafe { GetCurrentProcess() });
+    for _ in 0..8 {
+        let (Some(&parent), Some(child_created)) = (parents.get(&pid), child_time) else { return false };
+        if parent == 0 || parent == pid { return false; }
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, parent) };
+        if handle.is_null() { return false; }
+        let handle = Handle(handle);
+        let Some(parent_created) = creation_time(handle.0) else { return false };
+        if parent_created > child_created { return false; }
+
+        let mut image = [0u16; 32768];
+        let mut length = image.len() as u32;
+        let result = unsafe { QueryFullProcessImageNameW(handle.0, 0, image.as_mut_ptr(), &mut length) };
+        if result == 0 { return false; }
+        let image = PathBuf::from(std::ffi::OsString::from_wide(&image[..length as usize]));
+        if image.canonicalize().is_ok_and(|path| path == expected) { return true; }
+        pid = parent;
+        child_time = Some(parent_created);
+    }
+    false
+}
+
+/// 查询 Windows 进程创建时刻，供父 PID 复用检查。
+fn creation_time(process: HANDLE) -> Option<u64> {
+    let (mut created, mut exited, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+    let result = unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) };
+    (result != 0).then_some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+}

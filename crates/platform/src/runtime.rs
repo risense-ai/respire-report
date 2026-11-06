@@ -1,5 +1,5 @@
 //! 常驻宿主运行时：仅非秘密配置落文件，密钥仍由系统存储按随机引用读取。
-use crate::{PlatformError, Result, credentials::NativeCredentialStore, paths::PlatformPaths};
+use crate::{PlatformError, Result, admission::IngressAdmission, credentials::NativeCredentialStore, paths::PlatformPaths};
 use agentnotify_core::{
     clock::{Clock, ClockSnapshot, RuntimeClockEvidence},
     config::ConfigV1,
@@ -175,6 +175,8 @@ pub struct HostRuntime {
     pub config: ConfigV1,
     pub content_unavailable: bool,
     pub security: Arc<dyn DirectorySecurity>,
+    /// 当前数据目录的事件准入凭据及 IPC、离线完整性策略。
+    pub admission: Arc<IngressAdmission>,
 }
 impl HostRuntime {
     /// 不创建内容key，不在读取失败时覆盖旧key；正文不可用时有效配置降为元数据。
@@ -210,6 +212,7 @@ impl HostRuntime {
         for i in &settings.instances {
             policy.register_instance(i.id, i.capabilities.clone());
         }
+        let admission = Arc::new(IngressAdmission::open(&paths)?);
         let queue = Arc::new(
             SqliteQueue::open(
                 &paths.data,
@@ -222,7 +225,8 @@ impl HostRuntime {
                     faults: Arc::new(NoFaults),
                 },
             )
-            .map_err(|_| PlatformError("queue_unavailable"))?,
+            .map_err(|_| PlatformError("queue_unavailable"))?
+            .with_spool_admission(admission.clone()),
         );
         Ok(Self {
             paths,
@@ -233,6 +237,7 @@ impl HostRuntime {
             config,
             content_unavailable,
             security,
+            admission,
         })
     }
 }

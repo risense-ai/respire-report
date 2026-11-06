@@ -281,6 +281,43 @@ fn safe_completion(
 }
 
 impl SqliteQueue {
+    /// 发信前重新验证普通记录与摘要成员的来源，兼容旧库中尚未投递的通用事件。
+    /// 返回 false 代表未授权，不读取或解密正文。摘要混入未授权成员时整封不发送。
+    pub(crate) fn lease_source_authorized(&self, lease: &Lease) -> Result<bool, QueueError> {
+        let Some(admission) = &self.spool_admission else { return Ok(true) };
+        let db = self.connect(Duration::from_secs(1))?;
+        let meta: Vec<u8> = storage(db.query_row(
+            "SELECT i.metadata FROM notifications n JOIN ingress i ON i.id=n.id WHERE n.id=?1 AND n.status='leased' AND n.lease_token=?2 AND n.lease_until>?3",
+            params![lease.id.to_string(), lease.token.to_string(), self.deps.clock.now().timestamp_millis()],
+            |r| r.get(0),
+        ))?;
+        let authorize = |raw: &[u8]| {
+            let envelope: IngressEnvelopeV1 = storage(serde_json::from_slice(raw))?;
+            match admission.check_source(&envelope.adapter_output) {
+                Ok(()) => Ok(true),
+                Err(e) if e.code == QueueErrorCode::InvalidInput => Ok(false),
+                Err(e) => Err(e),
+            }
+        };
+        if !authorize(&meta)? {
+            return Ok(false);
+        }
+        // 摘要的共同事件是内部合成的，来源授权必须读取仍参与摘要的原始成员。
+        let mut members = storage(db.prepare(
+            "SELECT i.metadata FROM policy_digests d JOIN policy_notifications p ON p.digest_key=d.digest_key JOIN notifications n ON n.id=p.id JOIN ingress i ON i.id=n.id WHERE d.notification_id=?1 AND n.status='digest_pending' AND n.expires_at>?2",
+        ))?;
+        let members = storage(members.query_map(
+            params![lease.id.to_string(), self.deps.clock.now().timestamp_millis()],
+            |r| r.get::<_, Vec<u8>>(0),
+        ))?;
+        for member in members {
+            if !authorize(&storage(member)?)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// 仅持当前有效token的发送者读取暂存正文；终态不允许通过此入口重新解密。
     pub fn leased_mail_event(&self, lease: &Lease) -> Result<(NormalizedEventV1, u64), QueueError> {
         let db = self.connect(Duration::from_secs(1))?;

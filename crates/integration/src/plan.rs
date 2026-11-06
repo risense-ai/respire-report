@@ -16,10 +16,20 @@ fn append_hooks(root:&mut Value, adapter:&str, events:&[String], command:&str, i
             .as_array_mut().ok_or(IntegrationError::new("config_invalid"))?;
         let handler=if adapter=="codex" {
             json!({"type":"command","command":command,"commandWindows":command,"timeout":2})
+        } else if adapter == "workbuddy" {
+            // WorkBuddy 将整条命令交给命令执行器，没有 Claude 的 args 字段。
+            crate::workbuddy::handler(command)
         } else {
             json!({"type":"command","command":command,"args":["--data-dir",data_dir.to_string_lossy(),"hook","claude_code","--instance-id",id.to_string()],"timeout":2})
         };
         let group=json!({"hooks":[handler]});
+        if adapter == "workbuddy" {
+            // 同一份设置只能由一个 WorkBuddy 实例接收，已有其他 AgentNotify 回调时拒绝双接入。
+            let owned_count = crate::workbuddy::owned_count(list);
+            if owned_count > 0 && (owned_count != 1 || !list.contains(&group)) {
+                return Err(IntegrationError::new("owned_hook_conflict"));
+            }
+        }
         if list.iter().any(|v|v==&group) { continue; }
         // 相同实例的旧handler被用户改动时停止，不覆盖或制造双发。
         if list.iter().any(|v|v.to_string().contains(&id.to_string())) {
@@ -29,7 +39,15 @@ fn append_hooks(root:&mut Value, adapter:&str, events:&[String], command:&str, i
     }
     Ok(())
 }
-fn verify_client_version(request:&IntegrationRequest)->Result<()> {
+pub(crate) fn verify_client_version(request:&IntegrationRequest)->Result<()> {
+    if request.adapter_id == "workbuddy" {
+        let version = crate::workbuddy::version(&request.client_executable)
+            .ok_or(IntegrationError::new("version_unavailable"))?;
+        if version != request.product_version {
+            return Err(IntegrationError::new("version_mismatch"));
+        }
+        return Ok(());
+    }
     // 只执行用户显式指定二进制的--version；有界等待，不启动交互会话。
     let mut child=Command::new(&request.client_executable).arg("--version")
         .stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
@@ -56,8 +74,8 @@ fn verify_client_version(request:&IntegrationRequest)->Result<()> {
     Ok(())
 }
 pub fn create(manager:&IntegrationManager,mut request:IntegrationRequest)->Result<PlanSummary> {
-    // 1. 仅显式文件、已列精确版本可写；WorkBuddy和未知版本只读。
-    if request.schema_version!=1 || !matches!(request.adapter_id.as_str(),"codex"|"claude_code")
+    // 1. 仅显式文件和已列精确版本可写。
+    if request.schema_version!=1 || !matches!(request.adapter_id.as_str(),"codex"|"claude_code"|"workbuddy")
         || !safe_path(&request.config_path) || !safe_path(&request.client_executable)
         || !safe_path(&request.agentnotify_executable) || !safe_path(&manager.data_dir)
     { return Err(IntegrationError::new("invalid_request")); }
@@ -69,6 +87,10 @@ pub fn create(manager:&IntegrationManager,mut request:IntegrationRequest)->Resul
     }
     if !request.client_executable.is_file() || !request.agentnotify_executable.is_file() {
         return Err(IntegrationError::new("executable_missing"));
+    }
+    if request.adapter_id == "workbuddy" {
+        agentnotify_core::queue::reject_links(&request.config_path)
+            .map_err(|_| IntegrationError::new("unsafe_path"))?;
     }
     verify_client_version(&request)?;
     let self_exe=std::env::current_exe().map_err(|_|IntegrationError::new("executable_unavailable"))?;
@@ -93,6 +115,8 @@ pub fn create(manager:&IntegrationManager,mut request:IntegrationRequest)->Resul
             return Err(IntegrationError::new("unsafe_command"));
         }
         format!("\"{}\" --data-dir \"{}\" hook codex --instance-id {}",path,data,request.instance_id)
+    } else if request.adapter_id == "workbuddy" {
+        crate::workbuddy::command(&request.agentnotify_executable, &manager.data_dir, request.instance_id)?
     } else { request.agentnotify_executable.to_string_lossy().into_owned() };
     append_hooks(&mut root,&request.adapter_id,&entry.events,&command,request.instance_id,&manager.data_dir)?;
     let planned=serde_json::to_vec_pretty(&root).map_err(|_|IntegrationError::new("config_invalid"))?;

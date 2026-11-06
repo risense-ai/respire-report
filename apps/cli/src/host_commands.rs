@@ -8,6 +8,7 @@ use agentnotify_adapters::{AdapterContext,normalize};
 use agentnotify_integration::{IntegrationManager,compatibility,binding_active};
 use agentnotify_platform::{
     PlatformError, Result,
+    admission::IngressAdmission,
     ipc::{self, Request, Response},
     paths::PlatformPaths,
     runtime::HostRuntime,
@@ -112,6 +113,23 @@ pub fn execute(i: Invocation) -> i32 {
                 _ => Err(PlatformError("pause_failed")),
             }
         }
+        Command::SourceEnable(name) => {
+            use std::io::Read;
+            let _security = paths.secure(true)?;
+            let mut raw = zeroize::Zeroizing::new(Vec::new());
+            std::io::stdin().lock().take(129).read_to_end(&mut raw)
+                .map_err(|_| PlatformError("source_credential_invalid"))?;
+            if raw.len() > 128 {
+                return Err(PlatformError("source_credential_invalid"));
+            }
+            let id = IngressAdmission::open(&paths)?.enable_generic(&name, &raw)?;
+            Ok(success(serde_json::json!({"instance_id": id})))
+        }
+        Command::SourceRevoke(id) => {
+            let _security = paths.secure(false)?;
+            IngressAdmission::open(&paths)?.revoke_generic(id)?;
+            Ok(success(serde_json::json!({"instance_id": id, "enabled": false})))
+        }
         Command::Emit => ingest(paths, None, false, "generic"),
         Command::Hook { adapter, instance } => ingest(paths, Some(instance), true, &adapter),
         _ => Err(PlatformError("invalid_arguments")),
@@ -154,19 +172,14 @@ fn ingest_inner(paths: PlatformPaths, instance: Option<Uuid>, hook: bool, adapte
     // 1. 平台先验证安全目录与内容key；原始stdin只进入中立解析器。
     let host = HostRuntime::open(paths, true)?;
     let presence_suppressed = agentnotify_platform::presence::suppress_at_receive(&host.config);
-    let raw = read_bounded(std::io::stdin().lock()).map_err(|_| PlatformError("invalid_input"))?;
+    let raw = zeroize::Zeroizing::new(read_bounded(std::io::stdin().lock())
+        .map_err(|_| PlatformError("invalid_input"))?);
     if hook { hook_diagnostic(&host.paths, "stdin_read", "ok"); }
-    let instance = if let Some(id) = instance {
-        id
+    let (instance, generic_event) = if adapter == "generic" {
+        let (id, event) = host.admission.authorize_generic(&raw, instance)?;
+        (id, Some(zeroize::Zeroizing::new(event)))
     } else {
-        let v: serde_json::Value =
-            serde_json::from_slice(&raw).map_err(|_| PlatformError("invalid_input"))?;
-        Uuid::parse_str(
-            v.get("instance_id")
-                .and_then(|v| v.as_str())
-                .ok_or(PlatformError("invalid_identity"))?,
-        )
-        .map_err(|_| PlatformError("invalid_identity"))?
+        (instance.ok_or(PlatformError("invalid_identity"))?, None)
     };
     let context = IngressContext {
         instance_id: instance,
@@ -178,8 +191,8 @@ fn ingest_inner(paths: PlatformPaths, instance: Option<Uuid>, hook: bool, adapte
         let security=host.paths.secure(false)?;
         Some(agentnotify_adapters::codex_observer::completion_guard(&host.paths.data,instance,security.as_ref()).map_err(|e|PlatformError(e.code))?)
     }else{None};
-    let mut output = if adapter == "generic" {
-        parse_generic(&raw, &context).map_err(|_| PlatformError("invalid_input"))?
+    let mut output = if let Some(event) = generic_event {
+        parse_generic(&event, &context).map_err(|_| PlatformError("invalid_input"))?
     } else {
         let adapter = if adapter == "claude-code" { "claude_code" } else { adapter };
         let binding = IntegrationManager::new(host.paths.data.clone()).lookup(instance)
@@ -190,6 +203,15 @@ fn ingest_inner(paths: PlatformPaths, instance: Option<Uuid>, hook: bool, adapte
         }
         if !binding_active(&binding).map_err(|_| PlatformError("config_unavailable"))? {
             return Err(PlatformError("binding_changed"));
+        }
+        // WorkBuddy 来源需匹配已登记的真实进程映像。自行填写环境变量或 JSON 不能取得入站签名。
+        if adapter == "workbuddy" {
+            #[cfg(windows)]
+            if !agentnotify_platform::windows::has_process_ancestor(&binding.client_executable) {
+                return Err(PlatformError("workbuddy_source_unverified"));
+            }
+            #[cfg(not(windows))]
+            return Err(PlatformError("unsupported_adapter"));
         }
         // 完成来源切换仅在适配边界；SubagentStart/SessionEnd 生命周期仍走既有链路。
         if adapter=="codex" && agentnotify_adapters::codex_observer::completion_hook(&raw) {
@@ -212,7 +234,21 @@ fn ingest_inner(paths: PlatformPaths, instance: Option<Uuid>, hook: bool, adapte
             include_question: host.config.include_question && !presence_suppressed,
             supported_version: compatibility::find(adapter, &binding.product_version).is_ok(),
         };
-        normalize(adapter, &raw, &adapter_context).map_err(|e| PlatformError(e.code))?
+        let mut normalized = normalize(adapter, &raw, &adapter_context)
+            .map_err(|e| PlatformError(e.code))?;
+        if adapter == "workbuddy" {
+            if let Some(event) = normalized.notification.as_mut() {
+                // 仅在来源校验后读客户端元数据。正文分别遵守开关、保护可用性和接收时通知规则。
+                agentnotify_adapters::workbuddy::enrich_completion(
+                    event,
+                    &adapter_context.config_path,
+                    &raw,
+                    adapter_context.include_question && adapter_context.content_key_available,
+                    host.config.include_answer && !presence_suppressed && adapter_context.content_key_available,
+                );
+            }
+        }
+        normalized
     };
     if hook { hook_diagnostic(&host.paths, "normalized", "ok"); }
     // 已在本机接收时抑制的通知只保留状态元数据，不传输或落盘正文。
@@ -222,7 +258,9 @@ fn ingest_inner(paths: PlatformPaths, instance: Option<Uuid>, hook: bool, adapte
             event.answer = None;
         }
     }
+    host.admission.check_source(&output)?;
     let id = Uuid::new_v4();
+    let admission_tag = host.admission.sign_request(id, &output, presence_suppressed)?;
     // 2. 同一ID覆盖ACK超时后fallback；离线仅spool，禁止短命Hook创建活动runtime。
     let outcome = match ipc::call(
         &host.paths,
@@ -230,9 +268,16 @@ fn ingest_inner(paths: PlatformPaths, instance: Option<Uuid>, hook: bool, adapte
             id,
             output: output.clone(),
             presence_suppressed,
+            admission_tag: Some(admission_tag),
         },
     ) {
         Ok(Response::Accepted { outcome }) => outcome,
+        // 明确准入拒绝不能再走本地暂存后备，避免绕开后台拒绝。
+        Ok(Response::Error { code }) if code == "ingress_unauthorized" =>
+            return Err(PlatformError("ingress_unauthorized")),
+        // 同目录仍在运行旧版时，它不能验证新暂存，明确提示版本不一致。
+        Ok(Response::Error { code }) if code == "invalid_request" =>
+            return Err(PlatformError("ingress_protocol_mismatch")),
         _ => host
             .queue
             .accept_identified_with_presence(output, id, true, presence_suppressed)

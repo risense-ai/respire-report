@@ -1,13 +1,15 @@
+pub mod startup;
 mod commands;
 mod onboarding;
 mod desktop_shell;
 mod titlebar;
 
-pub fn run(instance: agentnotify_platform::gui_instance::GuiInstance) {
+pub fn run(instance: agentnotify_platform::gui_instance::GuiInstance) -> tauri::Result<()> {
     tauri::Builder::default()
         .manage(desktop_shell::ShellState::default())
         .setup(move |app| {
             desktop_shell::setup(app);
+            startup::stage(startup::Stage::Interface);
             let handle = app.handle().clone();
             // 窗口创建后才消费请求；线程持有GUI锁，不持有后台发送者锁。
             std::thread::spawn(move || loop {
@@ -28,6 +30,8 @@ pub fn run(instance: agentnotify_platform::gui_instance::GuiInstance) {
             desktop_shell::confirm_quit,
             onboarding::installation_info,
             onboarding::select_data_directory,
+            onboarding::start_integration_verification,
+            onboarding::poll_integration_verification,
             commands::get_health,
             commands::update_availability,
             commands::load_config,
@@ -50,5 +54,4 @@ pub fn run(instance: agentnotify_platform::gui_instance::GuiInstance) {
             commands::apply_uninstall,
         ])
         .run(tauri::generate_context!())
-        .expect("AgentNotify desktop startup failed");
 }

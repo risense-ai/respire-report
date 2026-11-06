@@ -227,3 +227,59 @@ fn framing_handles_worst_case_utf8_without_json_ciphertext_expansion() {
         16384
     );
 }
+
+/// A host verifier rejects legacy unsigned spool, a forged ACK, and a signed revoked source.
+/// Uses an isolated temporary queue and a test key, never the native credential store.
+#[test]
+fn authenticated_spool_rejects_legacy_ack_and_revoked_replay() {
+    use agentnotify_core::event::AdapterOutput;
+    use ring::hmac;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct TestAdmission {
+        key: hmac::Key,
+        enabled: AtomicBool,
+    }
+    impl SpoolAdmission for TestAdmission {
+        fn sign(&self, payload: &[u8]) -> Result<[u8; 32], QueueError> {
+            Ok(hmac::sign(&self.key, payload).as_ref().try_into().unwrap())
+        }
+        fn verify(&self, payload: &[u8], tag: &[u8]) -> Result<(), QueueError> {
+            hmac::verify(&self.key, payload, tag).map_err(|_| error(QueueErrorCode::InvalidInput))
+        }
+        fn check_source(&self, output: &AdapterOutput) -> Result<(), QueueError> {
+            if !self.enabled.load(Ordering::SeqCst)
+                && output.notification.as_ref().unwrap().event_id.as_deref() == Some("revoked")
+            {
+                return Err(error(QueueErrorCode::InvalidInput));
+            }
+            Ok(())
+        }
+    }
+
+    let mut f = Fixture::new();
+    let unsigned_id = uuid::Uuid::new_v4();
+    f.queue.accept_identified(f.output("legacy"), unsigned_id, true).unwrap();
+    let auth = Arc::new(TestAdmission {
+        key: hmac::Key::new(hmac::HMAC_SHA256, &[0x84; 32]),
+        enabled: AtomicBool::new(true),
+    });
+    f.queue = Arc::new(Arc::try_unwrap(f.queue).ok().unwrap().with_spool_admission(auth.clone()));
+    assert!(f.queue.accept_identified(f.output("legacy"), unsigned_id, true).is_err());
+
+    let good_id = uuid::Uuid::new_v4();
+    f.queue.accept_identified(f.output("good"), good_id, true).unwrap();
+    assert_eq!(f.queue.accept_identified(f.output("good"), good_id, true).unwrap(), EnqueueOutcome::Spooled { id: good_id });
+    assert!(f.queue.accept_identified(f.output("wrong"), good_id, true).is_err());
+    let revoked_id = uuid::Uuid::new_v4();
+    f.queue.accept_identified(f.output("revoked"), revoked_id, true).unwrap();
+    auth.enabled.store(false, Ordering::SeqCst);
+
+    let report = f.drain();
+    assert_eq!(report.imported, 1);
+    assert_eq!(report.quarantined, 2);
+    assert_eq!(f.count("notifications"), 1);
+    for id in [unsigned_id, revoked_id] {
+        assert!(f.queue.spool_path().join(format!("{id}.quarantine")).is_file());
+    }
+}

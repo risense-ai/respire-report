@@ -185,11 +185,15 @@ pub fn run(paths: PlatformPaths) -> Result<()> {
             }
             if last_import.elapsed() >= Duration::from_millis(200) {
                 match host.queue.import_spool() {
-                    Ok(report) if report.remaining == 0 => {
+                    Ok(report) => {
+                        if report.quarantined > 0 {
+                            record_issue(&issues, "spool_items_quarantined", "无法验证来源、已撤销或损坏的暂存记录已隔离，原文件保留。");
+                        }
                         // 仅完整成功扫描才能撤销当前导入故障；限时未完成仍保留告警。
-                        issues.lock().unwrap().retain(|issue| issue.code != "spool_import_pending");
+                        if report.remaining == 0 {
+                            issues.lock().unwrap().retain(|issue| issue.code != "spool_import_pending");
+                        }
                     }
-                    Ok(_) => {}
                     Err(error) => record_issue(
                         &issues,
                         "spool_import_pending",
@@ -245,7 +249,11 @@ pub fn run(paths: PlatformPaths) -> Result<()> {
                         },
                     }
                 }
-                Request::Ingest { id, output, presence_suppressed } => {
+                Request::Ingest { id, output, presence_suppressed, admission_tag } => {
+                    // IPC 客户端只通过当前用户 ACL 不足以证明事件由 AgentNotify 准入签发。
+                    if !admission_tag.is_some_and(|tag| host.admission.verify_request(id, &output, presence_suppressed, &tag).is_ok()) {
+                        return Response::Error { code: "ingress_unauthorized".into() };
+                    }
                     match host.queue.accept_identified_with_presence(output, id, false, presence_suppressed) {
                         Ok(outcome) => Response::Accepted { outcome },
                         Err(_) => Response::Error {
@@ -288,28 +296,75 @@ fn record_issue(issues: &Mutex<Vec<HealthIssue>>, code: &str, message: &str) {
 }
 
 /// 宿主只编排已登记适配器与中立入队；客户端表结构完全留在适配器内。
-fn poll_observers(host:&HostRuntime,shutdown:&AtomicBool)->Result<()>{
-    use agentnotify_adapters::{AdapterContext,codex_observer};
-    use agentnotify_integration::{IntegrationManager,binding_active,compatibility};
-    let security=host.paths.secure(false)?;
-    let bindings=IntegrationManager::new(host.paths.data.clone()).bindings().map_err(|_|PlatformError("observer_binding_unavailable"))?;
-    let mut incomplete=false;
-    let mut reply_contract_changed=false;
-    for binding in bindings.into_iter().filter(|b|b.adapter_id=="codex") {
-        if shutdown.load(Ordering::SeqCst){return Ok(());}
-        if !codex_observer::owns(&host.paths.data,binding.instance_id,security.as_ref()).map_err(|e|PlatformError(e.code))? {continue;}
-        if !binding_active(&binding).map_err(|_|PlatformError("observer_binding_unavailable"))? {return Err(PlatformError("observer_binding_changed"));}
-        let presence=agentnotify_platform::presence::suppress_at_receive(&host.config);
-        let context=AdapterContext{instance_id:binding.instance_id,adapter_id:binding.adapter_id,version:binding.product_version.clone(),config_path:binding.config_path,executable_path:binding.client_executable,registered_command:binding.owned_command,codex_home:binding.codex_home,received_at:chrono::Utc::now(),content_key_available:!host.content_unavailable,include_question:host.config.include_question && !presence,supported_version:compatibility::find("codex",&binding.product_version).is_ok()};
-        let batch=codex_observer::poll(&host.paths.data,&context,security.as_ref(),presence,host.config.include_answer).map_err(|e|PlatformError(e.code))?;
-        for event in batch.events {
-            if shutdown.load(Ordering::SeqCst){return Ok(());}
-            host.queue.accept_identified_with_presence(event.output.clone(),event.id,false,event.presence_suppressed).map_err(|_|PlatformError("observer_ingress_pending"))?;
-            codex_observer::acknowledge(&host.paths.data,context.instance_id,security.as_ref(),&event).map_err(|e|PlatformError(e.code))?;
+fn poll_observers(host: &HostRuntime, shutdown: &AtomicBool) -> Result<()> {
+    use agentnotify_adapters::codex_observer::{self, ObserverContext};
+    use agentnotify_integration::IntegrationManager;
+
+    // 1. 安全数据目录和本地实例登记是所有观察通道的共同前置条件。
+    let security = host.paths.secure(false)?;
+    let bindings = IntegrationManager::new(host.paths.data.clone()).bindings()
+        .map_err(|_| PlatformError("observer_binding_unavailable"))?;
+    let mut first_error = None;
+    let mut incomplete = false;
+    let mut reply_contract_changed = false;
+
+    // 2. 各实例分别检查契约、入队和确认游标，损坏的实例不阻断后续实例。
+    for binding in bindings.into_iter().filter(|binding| binding.adapter_id == "codex") {
+        if shutdown.load(Ordering::SeqCst) {
+            return Ok(());
         }
-        incomplete |= batch.incomplete;
-        reply_contract_changed |= batch.reply_contract_changed;
+        let result = (|| -> Result<()> {
+            // 只有持久启用的实例拥有观察通道，原生 Hook 配置和旧 EXE 不参与校验。
+            if !codex_observer::owns(&host.paths.data, binding.instance_id, security.as_ref())
+                .map_err(|error| PlatformError(error.code))?
+            {
+                return Ok(());
+            }
+            let home = binding.codex_home.as_deref()
+                .ok_or(PlatformError("observer_binding_unavailable"))?;
+            let presence = agentnotify_platform::presence::suppress_at_receive(&host.config);
+            let context = ObserverContext {
+                instance_id: binding.instance_id,
+                home,
+                content_key_available: !host.content_unavailable,
+                include_question: host.config.include_question && !presence,
+            };
+            let batch = codex_observer::poll(
+                &host.paths.data, &context, security.as_ref(), presence, host.config.include_answer,
+            ).map_err(|error| PlatformError(error.code))?;
+            for event in batch.events {
+                if shutdown.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                // 仅在核心确认持久接收后推进当前事件的游标，失败保留稳定 ID 供重试。
+                host.queue.accept_identified_with_presence(
+                    event.output.clone(), event.id, false, event.presence_suppressed,
+                ).map_err(|_| PlatformError("observer_ingress_pending"))?;
+                codex_observer::acknowledge(
+                    &host.paths.data, context.instance_id, security.as_ref(), &event,
+                ).map_err(|error| PlatformError(error.code))?;
+            }
+            incomplete |= batch.incomplete;
+            reply_contract_changed |= batch.reply_contract_changed;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
     }
-    if reply_contract_changed {return Err(PlatformError("observer_reply_contract_changed"));}
-    if incomplete{Err(PlatformError("observer_final_reply_pending"))}else{Ok(())}
+
+    // 3. 退出优先结束轮询。正常运行时，保留首个硬错误供后台诊断。
+    if shutdown.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    if reply_contract_changed {
+        return Err(PlatformError("observer_reply_contract_changed"));
+    }
+    if incomplete {
+        return Err(PlatformError("observer_final_reply_pending"));
+    }
+    Ok(())
 }

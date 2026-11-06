@@ -191,9 +191,21 @@ pub fn enable(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity
 /// 仅提供中立通知和稳定接收标识；ACK 后由调用者确认，不把正文写入游标库。
 pub struct ObservedBatch {pub events:Vec<Observed>,pub incomplete:bool,pub reply_contract_changed:bool}
 pub struct Observed { pub id:Uuid,pub output:AdapterOutput,pub presence_suppressed:bool, session:String,turn:String }
+/// 已启用观察实例的运行参数。来源身份由持久游标绑定和只读查询契约验证。
+pub struct ObserverContext<'a> {
+    /// 本地登记实例 ID，与游标记录一致才继续。
+    pub instance_id: Uuid,
+    /// 登记的 Codex 数据目录，必须与游标绑定的规范路径一致。
+    pub home: &'a Path,
+    /// 本机是否可以安全保护待发正文。
+    pub content_key_available: bool,
+    /// 用户是否允许采集本轮提问。
+    pub include_question: bool,
+}
+
 /// 按所有已见主键而非秒级时间排序扫描，迟到同秒/先启动后结束均不会遗漏。
-pub fn poll(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity,presence:bool,include_answer:bool)->Result<ObservedBatch>{
-    let home=verified(context)?;
+pub fn poll(root:&Path,context:&ObserverContext<'_>,security:&dyn DirectorySecurity,presence:bool,include_answer:bool)->Result<ObservedBatch>{
+    let home=context.home;
     let db = ledger(root, context.instance_id, security, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     check_identity(&db, context.instance_id, home)?;
     let enabled_at:String=sql(db.query_row("SELECT value FROM meta WHERE key='enabled_at'",[],|r|r.get(0)))?;
@@ -295,7 +307,13 @@ mod checks {
         let context=AdapterContext{instance_id:Uuid::from_bytes([5;16]),adapter_id:"codex".into(),version:"0.166.0-alpha.5.1".into(),config_path:root.join("hooks.json"),executable_path:root.join("codex.exe"),registered_command:"hook".into(),codex_home:Some(root.into()),received_at:Utc::now(),content_key_available:false,include_question:false,supported_version:true};
         enable(root,&context,&Isolated).unwrap();assert!(owns(root,context.instance_id,&Isolated).unwrap());
         let mut second=context.clone();second.instance_id=Uuid::from_bytes([6;16]);assert_eq!(enable(root,&second,&Isolated).unwrap_err().code,"observer_home_already_owned");
-        assert!(poll(root,&context,&Isolated,false,false).unwrap().events.is_empty());
+        let observing = ObserverContext {
+            instance_id: context.instance_id,
+            home: root,
+            content_key_available: false,
+            include_question: false,
+        };
+        assert!(poll(root,&observing,&Isolated,false,false).unwrap().events.is_empty());
         // Use the recorded activation second so crossing a wall-clock second cannot make fixture turns historical.
         let cursor = ledger(root, context.instance_id, &Isolated, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let activated: String = cursor.query_row("SELECT value FROM meta WHERE key='enabled_at'", [], |row| row.get(0)).unwrap();
@@ -311,37 +329,36 @@ mod checks {
             history.execute("INSERT INTO thread_items VALUES('session',?1,?1,'agentMessage',?2)",params![turn,raw]).unwrap();
         }
         history.execute("INSERT INTO thread_turns VALUES('session','unready','completed',?1,NULL)",[now]).unwrap();
-        let mut upgraded = context.clone();
-        upgraded.version = "0.167.0-alpha.3.2".into();
-        upgraded.executable_path = root.join("new/codex.exe");
-        validate_binding(root, upgraded.instance_id, root, &Isolated).unwrap();
-        let first_batch=poll(root,&upgraded,&Isolated,true,false).unwrap();assert!(first_batch.incomplete);
+        // 已启用观察通道不依赖旧的 Hook 文件或客户端程序路径。
+        assert!(!context.config_path.exists() && !context.executable_path.exists());
+        validate_binding(root, observing.instance_id, root, &Isolated).unwrap();
+        let first_batch=poll(root,&observing,&Isolated,true,false).unwrap();assert!(first_batch.incomplete);
         let first=first_batch.events;assert_eq!(first.len(),3);
         assert!(first.iter().any(|e|e.output.notification.as_ref().unwrap().agent_kind==AgentKind::Subagent));
         assert!(first.iter().all(|e|e.session!="worker"));
         // 未 ACK 即重启/重读保留同 ID 与首次 presence 决定，不因之后活跃状态变化改写。
-        let replay=poll(root,&context,&Isolated,false,false).unwrap().events;assert_eq!(first[0].id,replay[0].id);assert!(replay.iter().all(|e|e.presence_suppressed));
+        let replay=poll(root,&observing,&Isolated,false,false).unwrap().events;assert_eq!(first[0].id,replay[0].id);assert!(replay.iter().all(|e|e.presence_suppressed));
         for event in &replay {acknowledge(root,context.instance_id,&Isolated,event).unwrap();}
-        let waiting=poll(root,&context,&Isolated,false,false).unwrap();assert!(waiting.events.is_empty() && waiting.incomplete);
+        let waiting=poll(root,&observing,&Isolated,false,false).unwrap();assert!(waiting.events.is_empty() && waiting.incomplete);
         history.execute("UPDATE thread_turns SET final_agent_item_id='later' WHERE turn_id='unready'",[]).unwrap();
         history.execute("INSERT INTO thread_items VALUES('session','unready','later','agentMessage','{\"id\":\"later\",\"type\":\"agentMessage\",\"phase\":\"final_answer\"}')",[]).unwrap();
-        let ready=poll(root,&context,&Isolated,false,false).unwrap();assert!(!ready.incomplete);assert_eq!(ready.events.len(),1);
+        let ready=poll(root,&observing,&Isolated,false,false).unwrap();assert!(!ready.incomplete);assert_eq!(ready.events.len(),1);
         acknowledge(root,context.instance_id,&Isolated,&ready.events[0]).unwrap();
-        assert!(poll(root,&upgraded,&Isolated,false,false).unwrap().events.is_empty());
+        assert!(poll(root,&observing,&Isolated,false,false).unwrap().events.is_empty());
         std::fs::create_dir(root.join("new-home")).unwrap();
         assert_eq!(
-            validate_binding(root, upgraded.instance_id, &root.join("new-home"), &Isolated).unwrap_err().code,
+            validate_binding(root, observing.instance_id, &root.join("new-home"), &Isolated).unwrap_err().code,
             "observer_binding_changed"
         );
         history.execute("INSERT INTO thread_turns VALUES('session','future','completed',?1,'future')", [now]).unwrap();
         history.execute("INSERT INTO thread_items VALUES('session','future','future','agentMessage','{\"type\":\"agentMessage\",\"phase\":\"future\"}')", []).unwrap();
-        let changed = poll(root, &upgraded, &Isolated, false, false).unwrap();
+        let changed = poll(root, &observing, &Isolated, false, false).unwrap();
         assert!(changed.events.is_empty() && changed.reply_contract_changed);
         history.execute("UPDATE thread_items SET item_json=json_set(item_json,'$.phase','final_answer','$.id','future') WHERE item_id='future'", []).unwrap();
-        assert_eq!(poll(root, &upgraded, &Isolated, false, false).unwrap().events.len(), 1);
+        assert_eq!(poll(root, &observing, &Isolated, false, false).unwrap().events.len(), 1);
         history.execute("DROP TABLE thread_items", []).unwrap();
         assert_eq!(
-            poll(root, &upgraded, &Isolated, false, false).err().unwrap().code,
+            poll(root, &observing, &Isolated, false, false).err().unwrap().code,
             "observer_schema_unsupported"
         );
     }

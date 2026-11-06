@@ -8,12 +8,25 @@ export interface ConfigSnapshot { config: ConfigV1; revision: string; watchdog_r
 export interface MailView { sender: string; recipient: string; provider: string; host: string; port: number; tls: string; username: string; has_secret: boolean }
 export interface MailSnapshot { mail: MailView; revision: string }
 export interface SaveReport { saved: boolean; active: boolean; reason: string; revision: string }
-export interface DiscoveryOverride { adapter_id: 'codex' | 'claude_code'; config_dir: string; executable?: string }
+export interface DiscoveryOverride { adapter_id: 'codex' | 'claude_code' | 'workbuddy'; config_dir: string; executable?: string }
 export interface InspectedClient { adapter_id: string; config_path: string | null; status: IntegrationStatus; reason: string; candidate_id: string; instance_id: string | null; executable: string | null; version: string | null; supported: boolean; completion_channel: string; configured: boolean; event_count: number; last_event_at: number | null; smtp_accepted_count: number; live_verified: boolean }
 export interface InspectionReport { schema_version: number; clients: InspectedClient[]; checked_at: string }
 export interface PlanInput { adapter_id: string; product_version: string; config_path: string; client_executable: string; instance_id?: string | null }
 export interface PlanSummary { operation_id: string; original_hash: string | null; planned_hash: string; events: string[]; status: string }
 export interface VerificationReport { operation_id: string; config_matches_plan: boolean; binding_matches: boolean; status: string; live_verified: boolean; completion_channel: string; reason: string }
+// 验证游标来自本机登记及发起时间，只回传给当前接入查询。
+export interface LiveVerificationCursor {
+  instance_id: string
+  adapter_id: string
+  channel: 'hook' | 'local_observer'
+  started_at: number
+  last_sequence: number
+}
+export interface LiveVerificationEvent {
+  received_at: number
+  status: string
+  smtp_accepted: boolean
+}
 export interface HistoryRow {
   id: string; status: string; received_at: number; kind: string
   project: string; session: string; source: string; occurred_at: string | null
@@ -42,6 +55,8 @@ export const bridge = {
   inspectIntegrations: (overrides: DiscoveryOverride[] = []) => invoke<InspectionReport>('inspect_integrations', { overrides }),
   planIntegration: (input: PlanInput) => invoke<PlanSummary>('plan_integration', { input }),
   applyIntegration: (operationId: string) => invoke<VerificationReport>('apply_integration', { operationId }),
+  startIntegrationVerification: (instanceId: string) => invoke<LiveVerificationCursor>('start_integration_verification', { instanceId }),
+  pollIntegrationVerification: (cursor: LiveVerificationCursor) => invoke<LiveVerificationEvent | null>('poll_integration_verification', { cursor }),
   history: () => invoke<HistoryRow[]>('get_history'),
   diagnostics: () => invoke<DiagnosticsReport>('get_diagnostics'),
   createAgentBundle: (scenario: AgentScenario, hideLocalPaths: boolean, outputDirectory?: string) => invoke<AgentBundleResult>('create_agent_bundle', { scenario, hideLocalPaths, outputDirectory }),
@@ -84,6 +99,11 @@ export function errorText(error: unknown): string {
     owned_hook_conflict: '本工具的接入项已被修改，不能自动移除。请先通过 Agent 协助核对。',
     preview_expired: '测试邮件确认已过期，请重新预览。',
     credential_unavailable: '系统安全存储中的授权码暂不可读取，请重新保存邮箱设置。',
+    binding_missing: '当前工具尚未登记接入。请先完成接入，再验证真实任务。',
+    live_verification_unavailable: '暂时无法读取验证记录。请确认本机后台状态，再重试。',
+    live_verification_channel_changed: '完成通知通道在验证期间已变更。请重新检测，再开始验证。',
+    live_verification_expired: '本次验证已超时。可重新开始验证。',
+    live_verification_unsupported: '当前接入类型暂不支持验证真实任务。',
     unsupported_version: '当前工具版本尚未验证，不能写入接入配置。',
     bundle_create_failed: '无法在本机安全目录创建协助包。',
     bundle_destination_invalid: '协助包输出目录不可用，请重新生成。',

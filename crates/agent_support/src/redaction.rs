@@ -60,7 +60,7 @@ pub fn doctor(context: &BundleContext<'_>) -> DoctorExport {
 pub fn compatibility(context: &BundleContext<'_>) -> CompatibilityExport {
     let clients = context.inspection.map(|report| report.clients.iter().take(16).map(|c| {
         let id = adapter(&c.adapter_id);
-        ClientExport { adapter_id: id, support_status: if id == "workbuddy" { "research_pending" } else { "not_verified" }, evidence: "not_run" }
+        ClientExport { adapter_id: id, support_status: "not_verified", evidence: "not_run" }
     }).collect()).unwrap_or_default();
     CompatibilityExport { schema_version: 1, status: if context.inspection.is_some() { "limited_inspection" } else { "unavailable" }, clients }
 }

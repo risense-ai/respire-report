@@ -9,6 +9,13 @@ use std::{
 pub const MAX_ITEM_BYTES: usize = 64 * 1024;
 pub const MAX_SPOOL_BYTES: usize = 16 * 1024 * 1024;
 const HEADER: usize = 44;
+const ADMISSION_TAG: usize = 32;
+/// 由宿主注入独立的暂存完整性及来源撤销检查，不耦合客户端或凭据后端。
+pub trait SpoolAdmission: Send + Sync {
+    fn sign(&self, payload: &[u8]) -> Result<[u8; ADMISSION_TAG], QueueError>;
+    fn verify(&self, payload: &[u8], tag: &[u8]) -> Result<(), QueueError>;
+    fn check_source(&self, output: &AdapterOutput) -> Result<(), QueueError>;
+}
 #[derive(Clone)]
 /// nonce/tag固定长度，BodyProtector必须为每次seal生成唯一nonce并认证metadata。
 pub struct SealedBody {
@@ -185,7 +192,35 @@ impl SqliteQueue {
             file.take((MAX_ITEM_BYTES + 1) as u64)
                 .read_to_end(&mut bytes),
         )?;
+        // 仅 spool 外层增加完整性认证，历史 SQLite 正文保留原有 AEAD 格式。
+        if let Some(admission) = &self.spool_admission {
+            if bytes.len() < HEADER + ADMISSION_TAG || bytes.len() > MAX_ITEM_BYTES {
+                return Err(error(QueueErrorCode::InvalidInput));
+            }
+            let (payload, tag) = bytes.split_at(bytes.len() - ADMISSION_TAG);
+            // 旧暂存没有签名，完整的原文件交由导入流程隔离，不尝试把其当作合法来源。
+            let metadata_len = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+            let body_len = u32::from_le_bytes(payload[12..16].try_into().unwrap()) as usize;
+            if HEADER.checked_add(metadata_len).and_then(|len| len.checked_add(body_len)) != Some(payload.len()) {
+                return Err(error(QueueErrorCode::InvalidInput));
+            }
+            admission.verify(payload, tag)?;
+            let envelope = self.decode(payload)?;
+            if path.file_stem().and_then(|stem| stem.to_str())
+                .and_then(|stem| uuid::Uuid::parse_str(stem).ok()) != Some(envelope.ingress_id) {
+                return Err(error(QueueErrorCode::InvalidInput));
+            }
+            return Ok(envelope);
+        }
         self.decode(&bytes)
+    }
+    /// 在线导入和升级恢复都验证文件完整性及当前来源授权。
+    pub(crate) fn inspect_spool_for_import(&self, path: &Path) -> Result<IngressEnvelopeV1, QueueError> {
+        let envelope = self.inspect_spool(path)?;
+        if let Some(admission) = &self.spool_admission {
+            admission.check_source(&envelope.adapter_output)?;
+        }
+        Ok(envelope)
     }
     fn entries(&self) -> Result<Vec<PathBuf>, QueueError> {
         let dir = self.spool_path();
@@ -220,7 +255,14 @@ impl SqliteQueue {
         Ok(false)
     }
     pub(crate) fn write_spool(&self, e: &IngressEnvelopeV1) -> Result<EnqueueOutcome, QueueError> {
-        let bytes = self.encode(e)?;
+        let mut bytes = self.encode(e)?;
+        if let Some(admission) = &self.spool_admission {
+            if bytes.len() + ADMISSION_TAG > MAX_ITEM_BYTES {
+                return Err(error(QueueErrorCode::SpoolFull));
+            }
+            let tag = admission.sign(&bytes)?;
+            bytes.extend_from_slice(&tag);
+        }
         let mut total = 0u64;
         for p in self.entries()? {
             total = total
@@ -328,7 +370,7 @@ impl SqliteQueue {
             if check_deadline(Some(deadline)).is_err() {
                 break;
             }
-            let envelope = self.inspect_spool(&path);
+            let envelope = self.inspect_spool_for_import(&path);
             // 单次不可抢占IO返回后必须再检查，不能把已经耗尽的扫描/解密预算重新计时。
             if check_deadline(Some(deadline)).is_err() {
                 break;

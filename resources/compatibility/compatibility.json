@@ -39,10 +39,22 @@
       "evidence_level": "official_documented_version_not_local_installed_or_live_verified",
       "evidence_date": "2026-11-02",
       "references": ["https://code.claude.com/docs/en/hooks"]
+    },
+    {
+      "adapter_id": "workbuddy",
+      "product": "WorkBuddy Desktop",
+      "version": "5.9.3",
+      "os": "windows",
+      "architecture": "x86_64",
+      "config_mode": "settings_json",
+      "events": ["FinalStop"],
+      "metadata": "local_hook_session_and_request_id",
+      "evidence_level": "local_normal_completion_hook_probe_not_mail_verified",
+      "evidence_date": "2026-11-06",
+      "references": ["https://www.workbuddy.cn/docs/workbuddy/Plugins"]
     }
   ],
   "pending": [
-    {"adapter_id":"workbuddy","status":"research_pending","reason":"No formal lifecycle or versioned Hook contract confirmed"},
     {"adapter_id":"claude_chat","status":"unsupported","reason":"Claude Chat is not Claude Code"}
   ]
 }

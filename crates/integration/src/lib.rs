@@ -6,6 +6,7 @@ pub mod migration;
 pub mod plan;
 pub mod rollback;
 pub mod remove;
+mod workbuddy;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -141,12 +142,28 @@ pub(crate) fn atomic_write(path:&Path,bytes:&[u8])->Result<()> {
 /// 核对登记命令确实存在于当前客户端配置；不把正文或字符串子串当来源证明。
 pub fn binding_active(binding:&Binding)->Result<bool> {
     let entry=compatibility::find(&binding.adapter_id,&binding.product_version)?;
+    if binding.adapter_id == "workbuddy" {
+        // 绑定期间升级到未经验证的版本时停止接收；无需启动客户端做版本检查。
+        if workbuddy::version(&binding.client_executable).as_deref() != Some(binding.product_version.as_str()) {
+            return Ok(false);
+        }
+        agentnotify_core::queue::reject_links(&binding.config_path)
+            .map_err(|_| IntegrationError::new("unsafe_path"))?;
+    }
     let raw=fs::read(&binding.config_path).map_err(|_|IntegrationError::new("config_unavailable"))?;
     if raw.len()>1024*1024 { return Err(IntegrationError::new("config_too_large")); }
     let value:serde_json::Value=serde_json::from_slice(&raw).map_err(|_|IntegrationError::new("config_invalid"))?;
     let Some(hooks)=value.get("hooks").and_then(serde_json::Value::as_object) else { return Ok(false) };
     for event in &entry.events {
         let Some(groups)=hooks.get(event).and_then(serde_json::Value::as_array) else { return Ok(false) };
+        if binding.adapter_id == "workbuddy" {
+            // 仅接受登记的无过滤 FinalStop，防止配置编辑或重复接入改变通知范围。
+            let owned = serde_json::json!({"hooks": [workbuddy::handler(&binding.owned_command)]});
+            if workbuddy::owned_count(groups) != 1 || !groups.contains(&owned) {
+                return Ok(false);
+            }
+            continue;
+        }
         let found=groups.iter().any(|group|
             group.get("hooks").and_then(serde_json::Value::as_array).is_some_and(|handlers|
                 handlers.iter().any(|handler| {

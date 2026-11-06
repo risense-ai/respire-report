@@ -25,13 +25,14 @@ pub enum MailError {
 }
 /// 为主题保留项目、会话和事件语义，避免头字段超出整体512字节预算。
 fn subject_label(text:&str,budget:usize)->&str{let mut end=text.len().min(budget);while !text.is_char_boundary(end){end-=1;}&text[..end]}
-/// Codex沿用既有Python通知的主题和正文布局；正文仍受现有隐私开关与安全预算约束。
-fn codex_layout(e:&NormalizedEventV1,include_question:bool,include_answer:bool)->(String,String){
+/// 具名工具共享单轮详情排版。tool 用于主题及回到客户端的指引，正文沿用隐私与安全预算。
+fn detail_layout(e:&NormalizedEventV1,tool:&str,include_question:bool,include_answer:bool)->(String,String){
     let project=e.project_label.as_deref().filter(|s|!s.trim().is_empty()).unwrap_or("未知项目");
     let title=e.session_label.as_deref().filter(|s|!s.trim().is_empty()).unwrap_or("未命名会话");
     let short_title=if title.chars().count()>80 {format!("{}...",title.chars().take(77).collect::<String>())}else{title.to_owned()};
-    let label=match e.kind{EventKind::ResponseFinished=>"本轮处理结束",EventKind::Interrupted=>"本轮已中断",EventKind::Stalled=>"会话疑似无进展",_=>"Codex 状态变化"};
-    let subject=format!("Codex 通知：{}｜{}｜{label}",subject_label(project,150),short_title);
+    let label=match e.kind{EventKind::ResponseFinished=>"本轮处理结束",EventKind::Interrupted=>"本轮已中断",EventKind::Stalled=>"会话疑似无进展",_=>if tool=="Codex" {"Codex 状态变化"} else {e.display_kind()}};
+    let subject_title = if tool == "WorkBuddy" { subject_label(&short_title, 300) } else { &short_title };
+    let subject=format!("{tool} 通知：{}｜{}｜{label}",subject_label(project,150),subject_title);
     let time=e.source_time.unwrap_or(e.received_at).with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
     let mut body=format!("{label}\n项目：{project}\n会话：{title}\n时间：{time}\n");
     if include_question || include_answer {
@@ -40,14 +41,14 @@ fn codex_layout(e:&NormalizedEventV1,include_question:bool,include_answer:bool)-
         if include_answer {if include_question{body.push('\n');}body.push_str(&format!("回答：\n{}\n",e.answer.as_deref().unwrap_or("未取得对应轮次回答")));}
     }
     if e.kind==EventKind::Stalled {body.push_str("\n检测到该轮长时间没有新的转录活动，可能正在等待处理、工具阻塞或已经暂停。\n");}
-    body.push_str("\n请回到 Codex 查看结果或处理待办。\n");
+    body.push_str(&format!("\n请回到 {tool} 查看结果或处理待办。\n"));
     (subject,body)
 }
 /// 仅把动态文本作为文字展示，不解释模型HTML/Markdown，也不生成外部资源标签。
 pub(super) fn html_escape(value:&str)->String{
     value.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('\"',"&quot;").replace('\'',"&#39;")
 }
-fn codex_html(e:&NormalizedEventV1,plain:&str,include_question:bool,include_answer:bool,truncated:bool)->String{
+fn detail_html(e:&NormalizedEventV1,tool:&str,plain:&str,include_question:bool,include_answer:bool,truncated:bool)->String{
     let header=plain.lines().take(4).collect::<Vec<_>>().join("\n");
     let mut html=format!("<!doctype html><html><body style=\"margin:0;padding:24px;background:#ffffff;font-family:Arial,'Microsoft YaHei',sans-serif;font-size:15px;line-height:1.7;color:#273142\"><div style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{}</div>",html_escape(&header));
     for (title,value,enabled,color) in [("本轮提问",e.question.as_deref().unwrap_or("未取得对应轮次提问"),include_question,"#1d4ed8"),("回答",e.answer.as_deref().unwrap_or("未取得对应轮次回答"),include_answer,"#047857")] {
@@ -55,7 +56,7 @@ fn codex_html(e:&NormalizedEventV1,plain:&str,include_question:bool,include_answ
     }
     if e.kind==EventKind::Stalled {html.push_str("<p>检测到该轮长时间没有新的转录活动，可能正在等待处理、工具阻塞或已经暂停。</p>");}
     if truncated {html.push_str("<p>正文已按字节预算截断。</p>");}
-    html.push_str("<p style=\"margin-top:24px;font-size:13px;color:#667085\">请回到 Codex 查看结果或处理待办。</p></body></html>");
+    html.push_str(&format!("<p style=\"margin-top:24px;font-size:13px;color:#667085\">请回到 {} 查看结果或处理待办。</p></body></html>",html_escape(tool)));
     html
 }
 /// 首版只支持ASCII裸邮箱，拒绝显示名、SMTP注入及未声明SMTPUTF8的地址。
@@ -114,7 +115,16 @@ fn build(
         }
     })?;
     let e = clean.event;
-    let is_codex_detail=summary.is_none() && e.adapter_id=="codex";
+    // 来源工具由已归一化的适配器标识决定。摘要与其他适配器沿用通用展示。
+    let detail_tool = if summary.is_none() {
+        match e.adapter_id.as_str() {
+            "codex" => Some("Codex"),
+            "workbuddy" => Some("WorkBuddy"),
+            _ => None,
+        }
+    } else {
+        None
+    };
     // 2. 摘要使用真实计数/标签，绝不显示代表事件的“本轮处理结束”或暂存正文。
     let (subject, mut body) = if let Some(s) = summary {
         if s.labels.iter().any(|l| l.contains(['\r', '\n'])) {
@@ -124,8 +134,8 @@ fn build(
             "AgentNotify 通知摘要".to_owned(),
             format!("通知摘要：{} 条\n标签：{}\n", s.count, s.labels.join(" / ")),
         )
-    } else if e.adapter_id=="codex" {
-        codex_layout(&e,config.privacy.include_question,config.privacy.include_answer)
+    } else if let Some(tool) = detail_tool {
+        detail_layout(&e,tool,config.privacy.include_question,config.privacy.include_answer)
     } else {
         let mut b = format!(
             "{}\n项目：{}\n会话：{}\n",
@@ -152,7 +162,7 @@ fn build(
     if clean.question_truncated || clean.answer_truncated {
         body.push_str("\n正文已按字节预算截断。\n");
     }
-    let html_body=if is_codex_detail{Some(SecretInput::new(codex_html(&e,&body,config.privacy.include_question,config.privacy.include_answer,clean.question_truncated || clean.answer_truncated).into_bytes()))}else{None};
+    let html_body=detail_tool.map(|tool| SecretInput::new(detail_html(&e,tool,&body,config.privacy.include_question,config.privacy.include_answer,clean.question_truncated || clean.answer_truncated).into_bytes()));
     Ok(PreparedMail {
         message_id: format!("<{id}@agentnotify.local>"),
         from: config.from.clone(),

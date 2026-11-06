@@ -11,7 +11,7 @@ pub use ingress::{
     AdmissionGate, AdmissionGuard, DirectorySecurity, SystemDirectorySecurity, reject_links,
 };
 pub use lease::{Lease, SenderGuard, allowed_transition};
-pub use spool::{MAX_ITEM_BYTES, MAX_SPOOL_BYTES, SealedBody};
+pub use spool::{MAX_ITEM_BYTES, MAX_SPOOL_BYTES, SealedBody, SpoolAdmission};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -137,6 +137,7 @@ pub struct SqliteQueue {
     pub(crate) deps: QueueDependencies,
     pub(crate) gate: AdmissionGate,
     pub(crate) import_scan: std::sync::Mutex<spool::ImportScan>,
+    pub(crate) spool_admission: Option<Arc<dyn SpoolAdmission>>,
 }
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ImportReport {
@@ -178,6 +179,7 @@ impl SqliteQueue {
             deps,
             gate,
             import_scan: std::sync::Mutex::new(spool::ImportScan::default()),
+            spool_admission: None,
         };
         // 维护中的Hook只建立spool入口，不能打开/迁移正在恢复的业务数据库。
         if queue.maintenance()? { return Ok(queue); }
@@ -203,6 +205,11 @@ impl SqliteQueue {
         }
         Ok(queue)
     }
+    /// 生产宿主附加准入验证后，队列只回放由该宿主认证的暂存。
+    pub fn with_spool_admission(mut self, admission: Arc<dyn SpoolAdmission>) -> Self {
+        self.spool_admission = Some(admission);
+        self
+    }
     pub fn database_path(&self) -> PathBuf {
         self.root.join("queue.sqlite")
     }
@@ -227,6 +234,9 @@ impl SqliteQueue {
     ) -> Result<IngressEnvelopeV1, QueueError> {
         e.validate()
             .map_err(|_| error(QueueErrorCode::InvalidInput))?;
+        if let Some(admission) = &self.spool_admission {
+            admission.check_source(&e.adapter_output)?;
+        }
         if let Some(mut event) = e.adapter_output.notification.take() {
             // 抑制决定随envelope持久化；任何接收路径均不能为这类记录保存正文。
             if e.presence_suppressed {

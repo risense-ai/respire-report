@@ -7,6 +7,7 @@ mod codex_question;
 pub mod generic;
 pub mod metadata;
 pub mod source_classifier;
+pub mod workbuddy;
 
 use agentnotify_core::{
     contracts::InputError,
@@ -59,6 +60,7 @@ pub fn normalize(adapter: &str, raw: &[u8], context: &AdapterContext) -> Result<
         "codex" => codex::Codex.normalize(raw, context),
         "claude_code" | "claude-code" => claude_code::ClaudeCode.normalize(raw, context),
         "generic" => generic::Generic.normalize(raw, context),
+        "workbuddy" => workbuddy::WorkBuddy.normalize(raw, context),
         _ => Err(AdapterError::new("unsupported_adapter")),
     }
 }

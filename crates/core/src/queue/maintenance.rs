@@ -51,8 +51,15 @@ impl SqliteQueue {
         for entry in storage(std::fs::read_dir(self.spool_path()))? {
             let path = storage(entry)?.path();
             if path.extension().is_some_and(|e| e == "spool") {
-                let e = self.inspect_spool(&path)?; // 不兼容/无法解密时保留现场并拒绝解除维护。
-                pending.push((path, e));
+                // 已撤销或无来源证明的记录保留原件并隔离，不能从升级恢复绕过准入。
+                match self.inspect_spool_for_import(&path) {
+                    Ok(e) => pending.push((path, e)),
+                    Err(e) if self.spool_admission.is_some() && e.code == QueueErrorCode::InvalidInput => {
+                        ingress::replace_durable(&path, &path.with_extension("quarantine"))?;
+                    }
+                    // 不兼容或暂时无法读取凭据时保留现场，拒绝解除维护。
+                    Err(e) => return Err(e),
+                }
             }
         }
         pending.sort_by_key(|(_, e)| (instance(e), e.per_instance_sequence.is_some(), e.per_instance_sequence.unwrap_or(0), e.ingress_id));

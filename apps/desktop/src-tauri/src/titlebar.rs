@@ -6,11 +6,32 @@ mod windows {
     struct HighContrast { size: u32, flags: u32, scheme: *mut u16 }
     #[link(name = "user32")]
     unsafe extern "system" {
+        fn LoadIconW(instance: *mut c_void, resource: *const u16) -> *mut c_void;
+        fn SendMessageW(window: *mut c_void, message: u32, wparam: usize, lparam: isize) -> isize;
         fn SystemParametersInfoW(action: u32, parameter: u32, value: *mut c_void, flags: u32) -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
     }
     #[link(name = "dwmapi")]
     unsafe extern "system" {
         fn DwmSetWindowAttribute(window: *mut c_void, attribute: u32, value: *const c_void, size: u32) -> i32;
+    }
+    /// 用 EXE 的共享资源设置大窗口图标。资源不可用时由系统保留原有回退行为。
+    pub(super) fn apply_taskbar_icon(window: &tauri::Window) {
+        const APP_ICON_RESOURCE: usize = 32512; // Tauri Windows 构建写入的图标组 ID。
+        const WM_SETICON: u32 = 0x0080;
+        const ICON_BIG: usize = 1;
+
+        let Ok(handle) = window.hwnd() else { return; };
+        // 1. 读取当前模块资源。LoadIconW 返回共享句柄，系统管理其生命周期。
+        let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+        if module.is_null() { return; }
+        let icon = unsafe { LoadIconW(module, std::ptr::without_provenance(APP_ICON_RESOURCE)) };
+        if icon.is_null() { return; }
+        // 2. 只设置任务栏使用的大图标，保留 Tauri 的标题栏小图标和托盘。
+        unsafe { SendMessageW(handle.0, WM_SETICON, ICON_BIG, icon as isize); }
     }
     /// 高对比或查询失败时恢复系统颜色；旧系统不支持颜色属性时由DWM保持原生默认。
     pub(super) fn apply(window: &tauri::Window) {
@@ -30,5 +51,11 @@ mod windows {
 /// 其他系统保持原生标题栏，Windows在获得焦点或主题变化时重新尊重高对比设置。
 pub fn apply(window: &tauri::Window) {
     #[cfg(windows)] windows::apply(window);
+    #[cfg(not(windows))] let _ = window;
+}
+
+/// 初始化原生任务栏图标；其他平台由窗口系统沿用默认图标。
+pub fn apply_taskbar_icon(window: &tauri::Window) {
+    #[cfg(windows)] windows::apply_taskbar_icon(window);
     #[cfg(not(windows))] let _ = window;
 }

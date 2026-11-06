@@ -1,5 +1,25 @@
 //! 宿主调度查询和离线接收；不依赖平台或客户端。
 use super::*;
+
+/// ACK 超时重试可能使用不同本机时间或正文开关，只比较原始事件归属与标识。
+fn same_spooled_event(left: &IngressEnvelopeV1, right: &IngressEnvelopeV1) -> bool {
+    fn identity(output: &AdapterOutput) -> AdapterOutput {
+        let mut output = output.clone();
+        if let Some(event) = &mut output.notification {
+            event.received_at = DateTime::UNIX_EPOCH;
+            event.question = None;
+            event.answer = None;
+            event.content_key_available = false;
+        }
+        if let Some(signal) = &mut output.lifecycle {
+            signal.received_at = DateTime::UNIX_EPOCH;
+        }
+        output
+    }
+    left.ingress_id == right.ingress_id
+        && instance(left) == instance(right)
+        && identity(&left.adapter_output) == identity(&right.adapter_output)
+}
 impl SqliteQueue {
     /// 离线客户端只写原子spool，由常驻Policy保守重放。
     pub fn accept_offline(&self, output: AdapterOutput) -> Result<EnqueueOutcome, QueueError> {
@@ -51,7 +71,13 @@ impl SqliteQueue {
             }
         }
         }
-        if self.spool_path().join(format!("{id}.spool")).exists() {
+        let existing_path = self.spool_path().join(format!("{id}.spool"));
+        if storage(existing_path.try_exists())? {
+            // 可预测入站 ID 的文件只有通过认证且身份匹配，才算已经耐久落盘。
+            let existing = self.inspect_spool(&existing_path)?;
+            if !same_spooled_event(&existing, &e) {
+                return Err(error(QueueErrorCode::InvalidInput));
+            }
             return Ok(EnqueueOutcome::Spooled { id });
         }
         e.per_instance_sequence = self.next_sequence(instance(&e)).ok();

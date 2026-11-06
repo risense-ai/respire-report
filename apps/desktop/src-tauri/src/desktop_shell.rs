@@ -79,7 +79,11 @@ fn perform(app: &AppHandle, action: &str) -> Result<(), String> {
 /// 仅成功创建托盘后启用关闭隐藏，失败则保留普通可关闭窗口。
 pub fn setup(app: &tauri::App) {
     let handle = app.handle();
-    if let Some(window) = handle.get_webview_window("main") { crate::titlebar::apply(&window.as_ref().window()); }
+    if let Some(window) = handle.get_webview_window("main") {
+        let window = window.as_ref().window();
+        crate::titlebar::apply(&window);
+        crate::titlebar::apply_taskbar_icon(&window);
+    }
     let result = (|| -> tauri::Result<()> {
         let open = MenuItem::with_id(handle, "open", "打开设置", true, None::<&str>)?;
         let enabled = CheckMenuItem::with_id(handle, "enabled", "启用通知", true, false, None::<&str>)?;

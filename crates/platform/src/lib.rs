@@ -1,4 +1,5 @@
 //! 当前用户平台边界；真实注册仅由显式service命令触发。
+pub mod admission;
 pub mod credentials;
 pub mod ipc;
 pub mod gui_instance;

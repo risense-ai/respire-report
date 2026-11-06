@@ -221,6 +221,21 @@ t]))?;
             status = QueueStatus::Suppressed;
             reason = "duplicate";
         }
+        // 通用来源每分钟最多十条可投递入站；在线与离线共享持久滚动窗口。
+        // ingress 已在同一事务插入当前事件，因此第十一条开始记录为按规则抑制。
+        if status != QueueStatus::Suppressed
+            && e.adapter_output.source_evidence.origin_evidence == OriginEvidence::CallerReported
+        {
+            let recent: i64 = storage(tx.query_row(
+                "SELECT count(*) FROM (SELECT 1 FROM ingress WHERE instance_id=?1 AND received_at>?2 AND received_at<=?3 LIMIT 11)",
+                params![n.instance_id.to_string(), e.received_at.timestamp_millis()-60000, e.received_at.timestamp_millis()],
+                |r| r.get(0),
+            ))?;
+            if recent > 10 {
+                status = QueueStatus::Suppressed;
+                reason = "source_rate";
+            }
+        }
         let normal = matches!(
             n.kind,
             EventKind::ResponseFinished | EventKind::TaskCompleted

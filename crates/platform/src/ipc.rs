@@ -18,6 +18,9 @@ pub enum Request {
         output: AdapterOutput,
         /// CLI本机采样结果，仅授予抑制能力；外部事件JSON不提供此字段。
         presence_suppressed: bool,
+        /// 本机准入签名，认证事件、接收 ID 和离席决定。旧请求缺字段时明确拒绝。
+        #[serde(default)]
+        admission_tag: Option<[u8; 32]>,
     },
 }
 #[derive(Serialize, Deserialize)]

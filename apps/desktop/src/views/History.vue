@@ -10,7 +10,7 @@ const kindText: Record<string, string> = { response_finished:'本轮处理结束
 const stageText: Record<string, string> = { prepared:'准备发送', connecting:'连接邮件服务器', envelope:'提交发件人与收件人', data_started:'已开始提交邮件内容', accepted:'邮件服务器已接受' }
 const reasonText: Record<string, string> = { queued:'符合接收规则，已入队', user_policy:'按通知设置跳过', quiet_receive:'接收时处于免打扰时段', presence_receive:'接收时电脑活跃或空闲状态未知', duplicate:'重复事件', aggregated:'已合并到另一条汇总通知' }
 const diagnosticText: Record<string, string> = { sequence_gap:'事件序号存在间隔', late_sequence:'事件到达顺序晚于已处理记录', order_unknown:'事件顺序无法确认' }
-const sourceText: Record<string, string> = { codex:'Codex', claude_code:'Claude Code', generic:'通用接入' }
+const sourceText: Record<string, string> = { codex:'Codex', claude_code:'Claude Code', workbuddy:'WorkBuddy', generic:'通用接入' }
 async function load() {
   loading.value = true; error.value = ''
   try {
@@ -54,18 +54,20 @@ onMounted(load)
       <div v-if="!rows.length" class="empty">暂无可显示的通知。接入工具并产生受支持事件后，这里会显示真实状态。</div>
       <div v-else class="table-wrap">
         <table>
-          <thead><tr><th>接收时间</th><th>项目 / 会话</th><th>事件</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>接收时间</th><th>来源工具</th><th>项目 / 会话</th><th>事件</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>
             <template v-for="row in rows" :key="row.id">
               <tr>
                 <td>{{ time(row.received_at) }}</td>
+                <!-- 来源工具取通知记录的来源编码，列表与详情共用名称，缺失时显示未记录。 -->
+                <td>{{ codedLabel(row.source, sourceText) }}</td>
                 <td class="history-title"><strong>{{ row.project || '项目未记录' }}</strong><span>{{ row.session || '会话未记录' }}</span></td>
                 <td>{{ kindText[row.kind] ?? '未知事件' }}</td>
                 <td><span :class="['status-chip', statusClass(row.status)]">{{ statusText[row.status] ?? '未知状态' }}</span></td>
                 <td><button class="button detail-toggle" :aria-expanded="expandedId === row.id" :aria-controls="`notice-${row.id}`" @click="expandedId = expandedId === row.id ? null : row.id">{{ expandedId === row.id ? '收起详情' : '查看详情' }}</button></td>
               </tr>
               <tr v-if="expandedId === row.id" class="detail-row">
-                <td colspan="5">
+                <td colspan="6">
                   <section :id="`notice-${row.id}`" class="notice-detail" aria-label="通知详情">
                     <dl class="detail-grid">
                       <div><dt>项目</dt><dd>{{ row.project || '未记录' }}</dd></div>

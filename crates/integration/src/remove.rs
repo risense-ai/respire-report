@@ -45,6 +45,13 @@ pub fn preview(manager: &IntegrationManager) -> Result<Vec<RemovalFile>> {
             .get_mut("hooks")
             .and_then(Value::as_object_mut)
             .ok_or(IntegrationError::new("config_invalid"))?;
+        // WorkBuddy 的命令形状与预演共用，避免卸载时误摘其他 FinalStop。
+        let expected: Vec<Value> = bindings.iter().map(|binding| match binding.adapter_id.as_str() {
+            "codex" => Ok(json!({"type":"command","command":binding.owned_command,"commandWindows":binding.owned_command,"timeout":2})),
+            "claude_code" => Ok(json!({"type":"command","command":binding.owned_command,"args":["--data-dir",binding.data_dir.to_string_lossy(),"hook","claude_code","--instance-id",binding.instance_id.to_string()],"timeout":2})),
+            "workbuddy" => Ok(crate::workbuddy::handler(&binding.owned_command)),
+            _ => Err(IntegrationError::new("unsupported_adapter")),
+        }).collect::<Result<_>>()?;
         for groups in hooks.values_mut() {
             let groups = groups
                 .as_array_mut()
@@ -56,13 +63,6 @@ pub fn preview(manager: &IntegrationManager) -> Result<Vec<RemovalFile>> {
                     .and_then(Value::as_array_mut)
                     .ok_or(IntegrationError::new("config_invalid"))?;
                 let original_count = handlers.len();
-                let expected:Vec<Value>=bindings.iter().map(|b|if b.adapter_id=="codex" { json!({"type":"command","command":b.owned_command,"commandWindows":b.owned_command,"timeout":2}) } else { json!({"type":"command","command":b.owned_command,"args":["--data-dir",b.data_dir.to_string_lossy(),"hook","claude_code","--instance-id",b.instance_id.to_string()],"timeout":2}) }).collect();
-                if bindings
-                    .iter()
-                    .any(|b| !matches!(b.adapter_id.as_str(), "codex" | "claude_code"))
-                {
-                    return Err(IntegrationError::new("unsupported_adapter"));
-                }
                 for h in handlers.iter() {
                     if expected.contains(h) {
                         continue;
@@ -70,6 +70,9 @@ pub fn preview(manager: &IntegrationManager) -> Result<Vec<RemovalFile>> {
                     for b in &bindings {
                         let executable = if b.adapter_id == "codex" {
                             b.owned_command.split('"').nth(1).unwrap_or("")
+                        } else if b.adapter_id == "workbuddy" {
+                            // WorkBuddy 使用内置 PowerShell；不要把其他 PowerShell Hook 当作本工具所有。
+                            ""
                         } else {
                             &b.owned_command
                         };

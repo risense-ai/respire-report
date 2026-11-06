@@ -258,7 +258,7 @@ pub fn inspect_integrations(overrides: Option<Vec<agentnotify_integration::inspe
     let paths = paths()?;
     let security = if paths.data.exists() { Some(secure(&paths, false)?) } else { None };
     let overrides=overrides.unwrap_or_default();
-    if overrides.len()>8 || overrides.iter().any(|o| !matches!(o.adapter_id.as_str(),"codex"|"claude_code") || !o.config_dir.is_absolute() || o.config_dir.components().any(|c|matches!(c,std::path::Component::ParentDir))) {return Err("invalid_discovery_path".into());}
+    if overrides.len()>8 || overrides.iter().any(|o| !matches!(o.adapter_id.as_str(),"codex"|"claude_code"|"workbuddy") || !o.config_dir.is_absolute() || o.config_dir.components().any(|c|matches!(c,std::path::Component::ParentDir))) {return Err("invalid_discovery_path".into());}
     let mut report=agentnotify_integration::inspect::inspect_with(&IntegrationManager::new(paths.data.clone()),&overrides);
     crate::onboarding::enrich(&paths.data,&mut report,security.as_deref());Ok(report)
 }
@@ -323,7 +323,7 @@ fn run_cli<T: DeserializeOwned>(args: &[&str]) -> Result<T, String> {
 }
 pub fn plan_integration_inner(input: PlanInput) -> Result<SafePlanSummary, String> {
     // 1. 仅允许已登记客户端类型；CLI自行验证版本与文件，UI无法传入代理执行路径。
-    if !matches!(input.adapter_id.as_str(), "codex" | "claude_code") { return Err("unsupported_adapter".into()); }
+    if !matches!(input.adapter_id.as_str(), "codex" | "claude_code" | "workbuddy") { return Err("unsupported_adapter".into()); }
     let paths = paths()?;
     let _security = secure(&paths, true)?;
     let cli = cli_path()?;

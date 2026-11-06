@@ -3,7 +3,7 @@ use crate::output;
 use agentnotify_core::contracts::InputError;
 use std::path::PathBuf;
 use uuid::Uuid;
-pub const HELP: &str = "AgentNotify\n\n用法：agentnotify [--data-dir <absolute-dir>] <command>\n\n  doctor --json\n  integration inspect --json\n  integration plan --request <json-file>\n  integration apply --plan <json-file>\n  integration verify --operation-id <id>\n  integration rollback --operation-id <id>\n  hook <adapter> --instance-id <uuid>  (stdin)\n  emit --stdin\n  service install|start|stop|status|uninstall\n  update verify|prepare --manifest <json-file>\n  update status|apply|rollback|resume\n  uninstall --plan|--apply  (保留数据/凭据/Hook)\n  notifications pause|resume\n  agent-bundle create --task <json-file> --out <dir>\n  test --dry-run\n  test --send\n\n--data-dir 仅接受当前用户安全绝对目录，不会绕过权限。\n退出码：0成功，2输入错误，3需要用户动作，4运行失败。Hook遵从宿主非阻塞约定。\n尚未实现的后端明确返回unavailable，不代表已通知。";
+pub const HELP: &str = "AgentNotify\n\n用法：agentnotify [--data-dir <absolute-dir>] <command>\n\n  doctor --json\n  integration inspect --json\n  integration plan --request <json-file>\n  integration apply --plan <json-file>\n  integration verify --operation-id <id>\n  integration rollback --operation-id <id>\n  hook <adapter> --instance-id <uuid>  (stdin)\n  emit --stdin\n  source enable generic --name <name> --stdin\n  source revoke generic --instance-id <uuid>\n  service install|start|stop|status|uninstall\n  update verify|prepare --manifest <json-file>\n  update status|apply|rollback|resume\n  uninstall --plan|--apply  (保留数据/凭据/Hook)\n  notifications pause|resume\n  agent-bundle create --task <json-file> --out <dir>\n  test --dry-run\n  test --send\n\n--data-dir 仅接受当前用户安全绝对目录，不会绕过权限。\n退出码：0成功，2输入错误，3需要用户动作，4运行失败。Hook遵从宿主非阻塞约定。\n尚未实现的后端明确返回unavailable，不代表已通知。";
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Help,
@@ -25,6 +25,8 @@ pub enum Command {
     Rollback(String),
     Hook { adapter: String, instance: Uuid },
     Emit,
+    SourceEnable(String),
+    SourceRevoke(Uuid),
     Service(String),
     Bundle { task: PathBuf, out: PathBuf },
     DryRun,
@@ -112,7 +114,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, InputError> {
         ["hook", adapter, "--instance-id", id] => {
             if !matches!(
                 *adapter,
-                "generic" | "codex" | "claude_code" | "claude-code"
+                "generic" | "codex" | "claude_code" | "claude-code" | "workbuddy"
             ) {
                 return Err(InputError::new("unsupported_adapter"));
             }
@@ -122,6 +124,8 @@ pub fn parse(args: &[String]) -> Result<Invocation, InputError> {
             }
         }
         ["emit", "--stdin"] => Command::Emit,
+        ["source", "enable", "generic", "--name", name, "--stdin"] => Command::SourceEnable((*name).into()),
+        ["source", "revoke", "generic", "--instance-id", id] => Command::SourceRevoke(Uuid::parse_str(id).map_err(|_| InputError::new("invalid_identity"))?),
         ["service", action]
             if matches!(
                 *action,
@@ -165,6 +169,8 @@ pub fn execute(invocation: Invocation) -> i32 {
             | Command::ObserverEnable(_)
             | Command::Service(_)
             | Command::Emit
+            | Command::SourceEnable(_)
+            | Command::SourceRevoke(_)
             | Command::Hook { .. }
             | Command::Desktop
             | Command::LaunchDaemon

@@ -12,6 +12,11 @@ impl Default for NativeCredentialStore {
     }
 }
 impl NativeCredentialStore {
+    /// 入站签名和来源校验使用与邮箱、正文密钥隔离的原生凭据命名空间。
+    pub(crate) fn for_ingress(namespace: String) -> Self {
+        Self { namespace }
+    }
+
     /// 只允许新的UUID隔离命名空间，供显式授权的原生后端测试使用，不能枚举真实条目。
     pub fn isolated(id: uuid::Uuid) -> Self {
         Self {

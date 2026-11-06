@@ -5,20 +5,55 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (root, mode) = if args.first().is_some_and(|s| s == "--data-dir") && args.len() >= 2 {
         (Some(std::path::Path::new(&args[1])), &args[2..])
-    } else { (None, args.as_slice()) };
+    } else {
+        (None, args.as_slice())
+    };
+    if mode.is_empty() {
+        agentnotify_desktop_lib::startup::install();
+    }
     if mode.is_empty() || mode == ["daemon"] {
-        let paths = root.map(agentnotify_platform::paths::PlatformPaths::override_data)
+        let paths = root
+            .map(agentnotify_platform::paths::PlatformPaths::override_data)
             .unwrap_or_else(agentnotify_platform::paths::PlatformPaths::discover);
-        let paths = match paths { Ok(p) => p, Err(e) => { eprintln!("{}", e.0); std::process::exit(4); } };
+        let paths = match paths {
+            Ok(p) => p,
+            Err(e) => {
+                if mode.is_empty() {
+                    agentnotify_desktop_lib::startup::show(e.0);
+                } else {
+                    eprintln!("{}", e.0);
+                }
+                std::process::exit(4);
+            }
+        };
         if mode == ["daemon"] {
-            if let Err(e) = agentnotifyd::run(paths) { eprintln!("{}", e.0); std::process::exit(4); }
+            if let Err(e) = agentnotifyd::run(paths) {
+                eprintln!("{}", e.0);
+                std::process::exit(4);
+            }
             return;
         }
         // 2. GUI 同样使用已解析的根目录，避免界面和命令后台分裂到不同数据目录。
+        agentnotify_desktop_lib::startup::stage(agentnotify_desktop_lib::startup::Stage::Directory);
         match agentnotify_platform::gui_instance::GuiInstance::claim(&paths) {
-            Ok(Some(instance)) => agentnotify_desktop_lib::run(instance),
-            Ok(None) => {},
-            Err(e) => { eprintln!("{}", e.0); std::process::exit(4); }
+            Ok(Some(instance)) => {
+                agentnotify_desktop_lib::startup::stage(
+                    agentnotify_desktop_lib::startup::Stage::WebView,
+                );
+                if tauri::webview_version().is_err() {
+                    agentnotify_desktop_lib::startup::show("webview_runtime_unavailable");
+                    std::process::exit(4);
+                }
+                if agentnotify_desktop_lib::run(instance).is_err() {
+                    agentnotify_desktop_lib::startup::show("desktop_runtime_failed");
+                    std::process::exit(4);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                agentnotify_desktop_lib::startup::show(e.0);
+                std::process::exit(4);
+            }
         }
         return;
     }

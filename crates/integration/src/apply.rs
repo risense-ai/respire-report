@@ -26,6 +26,12 @@ pub fn apply(manager:&IntegrationManager,id:Uuid)->Result<VerificationReport> {
     let _lock=manager.lock_transaction()?;
     let mut plan=manager.load_operation(id)?;
     if plan.state==OperationState::RolledBack { return Err(IntegrationError::new("operation_rolled_back")); }
+    if plan.request.adapter_id == "workbuddy" {
+        // 预演后若客户端更新或配置路径变成链接，先拒绝写入。
+        crate::plan::verify_client_version(&plan.request)?;
+        agentnotify_core::queue::reject_links(&plan.request.config_path)
+            .map_err(|_| IntegrationError::new("unsafe_path"))?;
+    }
     let current=if plan.request.config_path.exists() {
         Some(fs::read(&plan.request.config_path).map_err(|_|IntegrationError::new("config_unavailable"))?)
     } else { None };

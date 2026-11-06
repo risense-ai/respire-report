@@ -2,8 +2,8 @@
 use crate::commands;
 use agentnotify_platform::{paths::PlatformPaths,service};
 use agentnotify_integration::inspect::InspectionReport;
-use rusqlite::{Connection,OpenFlags};
-use serde::Serialize;
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::{path::{Path,PathBuf},process::{Command,Stdio},time::Duration};
 
 #[derive(Serialize)]
@@ -51,9 +51,8 @@ pub fn enrich(root:&Path,report:&mut InspectionReport,security:Option<&dyn agent
         if row.adapter_id=="codex"{match observer_enabled(root,id){Ok(true)=>row.completion_channel="local_observer".into(),Ok(false)=>{},Err(code)=>{row.reason=code;continue;}}}
         let observer = row.completion_channel == "local_observer";
         if observer {
-            // 现有 Hook 归属仍须有效。完成监听只核对原实例、数据目录及当前结构。
+            // 已启用观察通道只校验原实例、数据目录和当前结构，独立于 Hook 配置。
             let validation = (|| -> Result<(), &str> {
-                if !row.configured { return Err("observer_binding_changed"); }
                 let binding = agentnotify_integration::IntegrationManager::new(root.to_path_buf())
                     .lookup(id).map_err(|_| "observer_binding_unavailable")?
                     .ok_or("observer_binding_unavailable")?;
@@ -63,6 +62,7 @@ pub fn enrich(root:&Path,report:&mut InspectionReport,security:Option<&dyn agent
                     .map_err(|error| error.code)
             })();
             row.supported = validation.is_ok();
+            row.configured = row.supported;
             (row.status, row.reason) = match validation {
                 Ok(()) => (agentnotify_core::contracts::IntegrationStatus::Configured, "只读观察绑定已通过检查。Codex 升级后可点「重新检测」，无需重新准备接入方案。".into()),
                 Err(code) => (agentnotify_core::contracts::IntegrationStatus::Degraded, code.into()),
@@ -83,6 +83,129 @@ pub fn bundle_parent(selected:Option<PathBuf>)->Result<PathBuf,String>{
 }
 fn event_evidence(db:&Connection,id:&str,adapter:&str,observer:bool)->rusqlite::Result<(u64,Option<i64>,u64)>{
     db.query_row("SELECT count(*),max(i.received_at),coalesce(sum(CASE WHEN n.status='sent' AND n.send_stage='accepted' THEN 1 ELSE 0 END),0) FROM ingress i JOIN notifications n ON n.id=i.id WHERE i.instance_id=?1 AND json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.notification.adapter_id')=?3 AND CASE WHEN ?2 THEN json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.source_evidence.classification_reason')='codex_local_completion' ELSE coalesce(json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.source_evidence.classification_reason'),'')!='codex_local_completion' END",rusqlite::params![id,observer,adapter],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,u64>(2)?)))
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CompletionChannel {
+    Hook,
+    LocalObserver,
+}
+
+/// 本次验证的查询边界。全部字段为本机元数据，不携带会话正文或认证信息。
+#[derive(Deserialize, Serialize)]
+pub struct LiveVerificationCursor {
+    /// 接入实例 ID，来自本机登记。
+    instance_id: uuid::Uuid,
+    /// 登记的适配器，用于隔离同一实例 ID 下的历史来源。
+    adapter_id: String,
+    /// 发起验证时的完成通道。
+    channel: CompletionChannel,
+    /// 发起验证时的本机 UTC 毫秒。
+    started_at: i64,
+    /// 发起时该实例已持久化的入站序号；没有序号证据时为零。
+    last_sequence: i64,
+}
+
+#[derive(Serialize)]
+pub struct LiveVerificationEvent {
+    /// 入站时间，来自队列的 UTC 毫秒。
+    received_at: i64,
+    /// 当前投递状态，来自队列；不会推断收件箱结果。
+    status: String,
+    /// 仅 sent 与 accepted 两项持久证据同时存在时为 true。
+    smtp_accepted: bool,
+}
+
+/// 从本机登记定位验证对象。读取绑定及通道状态，不更新客户端或队列。
+#[tauri::command]
+pub fn start_integration_verification(instance_id: uuid::Uuid) -> Result<LiveVerificationCursor, String> {
+    // 1. 校验本机数据目录并查找用户选中的登记实例。
+    let paths = commands::paths()?;
+    let _security = paths.secure(false).map_err(|error| error.0.to_owned())?;
+    let binding = agentnotify_integration::IntegrationManager::new(paths.data.clone())
+        .lookup(instance_id).map_err(|_| "binding_unavailable")?
+        .ok_or("binding_missing")?;
+
+    // 2. 使用发起时的主完成通道，避免其他通道的历史被计入。
+    let channel = match binding.adapter_id.as_str() {
+        "codex" if observer_enabled(&paths.data, instance_id)? => CompletionChannel::LocalObserver,
+        "codex" | "claude_code" | "workbuddy" => CompletionChannel::Hook,
+        _ => return Err("live_verification_unsupported".into()),
+    };
+    let last_sequence = match open_verification_db(&paths.data)? {
+        Some(db) => db.query_row("SELECT sequence FROM checkpoints WHERE instance_id=?1", [instance_id.to_string()], |row| row.get(0))
+            .optional().map_err(|_| "live_verification_unavailable")?.unwrap_or(0),
+        None => 0,
+    };
+    Ok(LiveVerificationCursor {
+        instance_id,
+        adapter_id: binding.adapter_id,
+        channel,
+        started_at: chrono::Utc::now().timestamp_millis(),
+        last_sequence,
+    })
+}
+
+/// 只查询本次开始后第一个主会话完成事件及其投递状态；无记录时返回空。
+#[tauri::command]
+pub fn poll_integration_verification(cursor: LiveVerificationCursor) -> Result<Option<LiveVerificationEvent>, String> {
+    // 1. 验证窗口仅持续两分钟，短暂留出末次查询的响应余量。
+    let elapsed = chrono::Utc::now().timestamp_millis().saturating_sub(cursor.started_at);
+    if !(0..=125_000).contains(&elapsed) {
+        return Err("live_verification_expired".into());
+    }
+    let paths = commands::paths()?;
+    let _security = paths.secure(false).map_err(|error| error.0.to_owned())?;
+    // 2. Codex 如已切换通道，要求重新验证以避免把旧通道的结果误算在本次。
+    if cursor.adapter_id == "codex"
+        && observer_enabled(&paths.data, cursor.instance_id)? != matches!(cursor.channel, CompletionChannel::LocalObserver)
+    {
+        return Err("live_verification_channel_changed".into());
+    }
+    let Some(db) = open_verification_db(&paths.data)? else { return Ok(None) };
+    verification_event(&db, &cursor).map_err(|_| "live_verification_unavailable".into())
+}
+
+/// 尚未初始化队列时返回空；已有队列只读打开，并拒绝链接。
+fn open_verification_db(root: &Path) -> Result<Option<Connection>, String> {
+    let path = root.join("queue.sqlite");
+    if !path.try_exists().map_err(|_| "live_verification_unavailable")? {
+        return Ok(None);
+    }
+    agentnotify_core::queue::reject_links(&path).map_err(|_| "live_verification_unavailable")?;
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| "live_verification_unavailable")?;
+    db.busy_timeout(Duration::from_millis(300)).map_err(|_| "live_verification_unavailable")?;
+    Ok(Some(db))
+}
+
+/// 查入站和发送元数据。观察通道的原始完成时间仅精确到秒，因此取下一整秒，排除本次验证前积压的旧任务。
+fn verification_event(db: &Connection, cursor: &LiveVerificationCursor) -> rusqlite::Result<Option<LiveVerificationEvent>> {
+    let observer = matches!(cursor.channel, CompletionChannel::LocalObserver);
+    let first_observer_second = cursor.started_at.div_euclid(1_000).saturating_add(1);
+    db.query_row(
+        "SELECT i.received_at, n.status, (n.status='sent' AND n.send_stage='accepted')
+         FROM ingress i JOIN notifications n ON n.id=i.id
+         WHERE i.instance_id=?1 AND i.received_at>?2 AND i.received_at<=?2+120000
+           AND (i.sequence IS NULL OR i.sequence>?6)
+           AND json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.notification.adapter_id')=?3
+           AND json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.notification.kind')='response_finished'
+           AND json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.notification.actor_scope')='main'
+           AND coalesce(json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.source_evidence.source_class'),'')!='internal_background'
+           AND CASE WHEN ?4 THEN
+                json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.source_evidence.classification_reason')='codex_local_completion'
+                AND unixepoch(json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.notification.source_time'))>=?5
+               ELSE coalesce(json_extract(CAST(i.metadata AS TEXT),'$.adapter_output.source_evidence.classification_reason'),'')!='codex_local_completion'
+               END
+         ORDER BY i.rowid LIMIT 1",
+        rusqlite::params![cursor.instance_id.to_string(), cursor.started_at, cursor.adapter_id, observer, first_observer_second, cursor.last_sequence],
+        |row| Ok(LiveVerificationEvent {
+            received_at: row.get(0)?,
+            status: row.get(1)?,
+            smtp_accepted: row.get(2)?,
+        }),
+    ).optional()
 }
 
 #[cfg(test)]
