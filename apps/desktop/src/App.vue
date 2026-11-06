@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref, shallowRef } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref, shallowRef, watch } from 'vue'
 import { navigationGuardKey, type PageDraft } from './composables/useUnsavedChanges'
 import type { Component } from 'vue'
 import type { HealthReport } from './generated/contracts'
@@ -28,11 +28,21 @@ const leaveDialog = ref<HTMLDialogElement | null>(null)
 const pendingAction = shallowRef<(() => void | Promise<void>) | null>(null)
 const leaving = shallowRef(false)
 const leaveError = shallowRef('')
+const navigationBlocked = shallowRef(false)
+const draftBusy = computed(() => draft.value?.busy() ?? false)
+watch(draftBusy, busy => {
+  // 当前操作结束后清除本次离开提示，避免下一次操作沿用旧警告。
+  if (!busy) navigationBlocked.value = false
+}, { flush: 'sync' })
 const canSave = computed(() => !!draft.value?.save)
 const changedFields = computed(() => draft.value?.changes?.() ?? ['当前页面输入'])
 function requestAction(action: () => void | Promise<void>) {
   if (leaving.value || pendingAction.value) return
-  if (draft.value?.busy()) { runtimeMessage.value = '当前操作尚未完成，请稍候再离开。'; return }
+  // 保存或读取期间留在当前页，提示随操作结束消失。
+  if (draftBusy.value) {
+    navigationBlocked.value = true
+    return
+  }
   if (!draft.value?.dirty()) { void Promise.resolve().then(action).catch(e => { runtimeMessage.value = errorText(e) }); return }
   pendingAction.value = action; leaveError.value = ''; runtimeMessage.value = ''; leaveDialog.value?.showModal()
 }
@@ -116,7 +126,12 @@ onUnmounted(() => { disposed = true; if (timer) clearInterval(timer); for (const
           {{ !health || healthError || health?.daemon === 'unknown' || health?.daemon === 'unavailable' ? '后台状态未确认' : health?.daemon === 'running' ? '后台运行中' : '后台未运行' }}
         </div>
       </header>
-      <main><div v-if="runtimeMessage" class="callout error" role="alert">{{ runtimeMessage }} <button class="text-button" @click="runtimeMessage = ''">收起</button></div><div v-if="trayNotice" class="callout" role="status">{{ trayNotice }} <button class="text-button" @click="trayNotice = ''">知道了</button></div><component :is="pages.find(p => p.id === active)?.component" :key="active" @changed="refreshHealth" @navigate="navigate" /></main>
+      <main>
+        <div v-if="navigationBlocked" class="callout" role="status">
+          当前操作尚未完成，请稍候再离开。 <button class="text-button" @click="navigationBlocked = false">收起</button>
+        </div>
+        <div v-if="runtimeMessage" class="callout error" role="alert">{{ runtimeMessage }} <button class="text-button" @click="runtimeMessage = ''">收起</button></div><div v-if="trayNotice" class="callout" role="status">{{ trayNotice }} <button class="text-button" @click="trayNotice = ''">知道了</button></div><component :is="pages.find(p => p.id === active)?.component" :key="active" @changed="refreshHealth" @navigate="navigate" />
+      </main>
       <footer class="footer"><span class="app-version">AgentNotify {{ desktopInfo ? `v${desktopInfo.version} · ${desktopInfo.build_id}` : '· 版本未读取' }}</span><details v-if="desktopInfo" class="runtime-details"><summary>运行信息</summary><div class="runtime-popover"><p><strong>程序位置</strong><span class="mono">{{ desktopInfo.executable }}</span></p><p><strong>数据位置</strong><span class="mono">{{ desktopInfo.data_dir }}</span></p></div></details></footer>
     </div>
   </div>
