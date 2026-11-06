@@ -42,28 +42,35 @@ pub fn observer_enabled(root:&Path,id:uuid::Uuid)->Result<bool,String>{
     Ok(value=="1")
 }
 /// 证据按instance和适配器的已有来源标记分组；历史observer事件不能证明Hook已调用。
-pub fn enrich(root:&Path,report:&mut InspectionReport){
+pub fn enrich(root:&Path,report:&mut InspectionReport,security:Option<&dyn agentnotify_core::queue::DirectorySecurity>){
     let path=root.join("queue.sqlite");
     let db=if path.exists(){Connection::open_with_flags(&path,OpenFlags::SQLITE_OPEN_READ_ONLY).ok()}else{None};
     if let Some(db)=&db {let _=db.busy_timeout(Duration::from_millis(300));}
     for row in &mut report.clients {
         let Some(id)=row.instance_id else{continue;};
         if row.adapter_id=="codex"{match observer_enabled(root,id){Ok(true)=>row.completion_channel="local_observer".into(),Ok(false)=>{},Err(code)=>{row.reason=code;continue;}}}
+        let observer = row.completion_channel == "local_observer";
+        if observer {
+            // 现有 Hook 归属仍须有效。完成监听只核对原实例、数据目录及当前结构。
+            let validation = (|| -> Result<(), &str> {
+                if !row.configured { return Err("observer_binding_changed"); }
+                let binding = agentnotify_integration::IntegrationManager::new(root.to_path_buf())
+                    .lookup(id).map_err(|_| "observer_binding_unavailable")?
+                    .ok_or("observer_binding_unavailable")?;
+                let home = binding.codex_home.as_deref().ok_or("observer_binding_unavailable")?;
+                let security = security.ok_or("observer_binding_unavailable")?;
+                agentnotify_adapters::codex_observer::validate_binding(root, id, home, security)
+                    .map_err(|error| error.code)
+            })();
+            row.supported = validation.is_ok();
+            (row.status, row.reason) = match validation {
+                Ok(()) => (agentnotify_core::contracts::IntegrationStatus::Configured, "只读观察绑定已通过检查。Codex 升级后可点「重新检测」，无需重新准备接入方案。".into()),
+                Err(code) => (agentnotify_core::contracts::IntegrationStatus::Degraded, code.into()),
+            };
+        }
         if let Some(db)=&db {
-            let observer=row.completion_channel=="local_observer";
-            if observer {
-                let valid=(||->Result<bool,String>{
-                    let binding=agentnotify_integration::IntegrationManager::new(root.to_path_buf()).lookup(id).map_err(|_|"observer_binding_unavailable")?.ok_or("observer_binding_unavailable")?;
-                    let home=binding.codex_home.ok_or("observer_binding_unavailable")?.canonicalize().map_err(|_|"observer_binding_unavailable")?;
-                    let ledger=Connection::open_with_flags(root.join(format!("codex-observer-{id}.sqlite")),OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_|"observer_binding_unavailable")?;
-                    ledger.busy_timeout(Duration::from_millis(300)).map_err(|_|"observer_binding_unavailable")?;
-                    let actual:String=ledger.query_row("SELECT value FROM meta WHERE key='binding'",[],|r|r.get(0)).map_err(|_|"observer_binding_unavailable")?;
-                    Ok(actual==format!("{}|{}|{}",id,row.version.as_deref().unwrap_or(""),home.display()).to_lowercase())
-                })();
-                if valid!=Ok(true){row.reason="observer_binding_changed".into();row.supported=false;}
-            }
             let evidence=event_evidence(db,&id.to_string(),&row.adapter_id,observer);
-            match evidence {Ok((count,last,sent))=>{row.event_count=count;row.last_event_at=last;row.smtp_accepted_count=sent;row.live_verified=row.configured&&row.supported&&count>0;if row.live_verified {row.reason="event_recorded".into();}},Err(_)=>row.reason="event_evidence_unavailable".into()}
+            match evidence {Ok((count,last,sent))=>{row.event_count=count;row.last_event_at=last;row.smtp_accepted_count=sent;row.live_verified=row.configured&&row.supported&&count>0;if row.live_verified && !observer {row.reason="event_recorded".into();}},Err(_) if row.supported=>row.reason="event_evidence_unavailable".into(),Err(_)=>{}}
         }else if path.exists(){row.reason="event_evidence_unavailable".into();}
     }
 }

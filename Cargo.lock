@@ -119,6 +119,7 @@ dependencies = [
 name = "agentnotify-desktop"
 version = "0.1.0"
 dependencies = [
+ "agentnotify-adapters",
  "agentnotify-agent-support",
  "agentnotify-cli",
  "agentnotify-core",

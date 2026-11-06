@@ -294,6 +294,7 @@ fn poll_observers(host:&HostRuntime,shutdown:&AtomicBool)->Result<()>{
     let security=host.paths.secure(false)?;
     let bindings=IntegrationManager::new(host.paths.data.clone()).bindings().map_err(|_|PlatformError("observer_binding_unavailable"))?;
     let mut incomplete=false;
+    let mut reply_contract_changed=false;
     for binding in bindings.into_iter().filter(|b|b.adapter_id=="codex") {
         if shutdown.load(Ordering::SeqCst){return Ok(());}
         if !codex_observer::owns(&host.paths.data,binding.instance_id,security.as_ref()).map_err(|e|PlatformError(e.code))? {continue;}
@@ -307,6 +308,8 @@ fn poll_observers(host:&HostRuntime,shutdown:&AtomicBool)->Result<()>{
             codex_observer::acknowledge(&host.paths.data,context.instance_id,security.as_ref(),&event).map_err(|e|PlatformError(e.code))?;
         }
         incomplete |= batch.incomplete;
+        reply_contract_changed |= batch.reply_contract_changed;
     }
+    if reply_contract_changed {return Err(PlatformError("observer_reply_contract_changed"));}
     if incomplete{Err(PlatformError("observer_final_reply_pending"))}else{Ok(())}
 }

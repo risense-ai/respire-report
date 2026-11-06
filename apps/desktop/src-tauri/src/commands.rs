@@ -256,11 +256,11 @@ pub fn save_mail(input: MailInput, expected_revision: String) -> Result<SaveRepo
 #[tauri::command]
 pub fn inspect_integrations(overrides: Option<Vec<agentnotify_integration::inspect::DiscoveryOverride>>) -> Result<InspectionReport, String> {
     let paths = paths()?;
-    let _security = if paths.data.exists() { Some(secure(&paths, false)?) } else { None };
+    let security = if paths.data.exists() { Some(secure(&paths, false)?) } else { None };
     let overrides=overrides.unwrap_or_default();
     if overrides.len()>8 || overrides.iter().any(|o| !matches!(o.adapter_id.as_str(),"codex"|"claude_code") || !o.config_dir.is_absolute() || o.config_dir.components().any(|c|matches!(c,std::path::Component::ParentDir))) {return Err("invalid_discovery_path".into());}
     let mut report=agentnotify_integration::inspect::inspect_with(&IntegrationManager::new(paths.data.clone()),&overrides);
-    crate::onboarding::enrich(&paths.data,&mut report);Ok(report)
+    crate::onboarding::enrich(&paths.data,&mut report,security.as_deref());Ok(report)
 }
 
 #[tauri::command]

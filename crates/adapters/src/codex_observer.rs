@@ -46,18 +46,29 @@ fn desktop_project(home:&Path,cwd:&str,session:&str)->Option<String>{
     let current=project_path_key(cwd);
     labels.iter().filter_map(|(path,name)|{let root=project_path_key(path);let name=name.as_str()?;if !root.is_empty()&&!name.trim().is_empty()&&(current==root||current.starts_with(&(root.clone()+"/"))){Some((root.len(),name))}else{None}}).max_by_key(|(len,_)|*len).map(|(_,name)|name.to_owned())
 }
+const FINAL_REPLY_SQL: &str = "SELECT CAST(i.item_type AS TEXT),CASE WHEN json_valid(i.item_json) THEN CAST(json_extract(i.item_json,'$.type') AS TEXT) END,CASE WHEN json_valid(i.item_json) THEN CAST(json_extract(i.item_json,'$.phase') AS TEXT) END,CASE WHEN json_valid(i.item_json) THEN json_extract(i.item_json,'$.id')=i.item_id END FROM thread_turns t JOIN thread_items i ON i.thread_id=t.thread_id AND i.turn_id=t.turn_id AND i.item_id=t.final_agent_item_id WHERE t.thread_id=?1 AND t.turn_id=?2";
+const THREAD_METADATA_SQL: &str = "SELECT t.source,t.thread_source,t.cwd,substr(COALESCE(NULLIF(t.name,''),t.title),1,512),p.name,t.originator FROM threads t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?1";
+const TURNS_SQL: &str = "SELECT thread_id,turn_id,status,completed_at FROM thread_turns ORDER BY thread_id,turn_id LIMIT 100001";
+
 /// 真实完成必须对应本轮最终回答项；不以普通Stop、问号或工具/阶段回报推定最终回复。
 fn final_reply(history:&Connection,session:&str,turn:&str)->Result<bool>{
-    let row:Option<(String,Option<String>,Option<String>,bool)>=sql(history.query_row("SELECT i.item_type,json_extract(i.item_json,'$.type'),json_extract(i.item_json,'$.phase'),json_extract(i.item_json,'$.id')=i.item_id FROM thread_turns t JOIN thread_items i ON i.thread_id=t.thread_id AND i.turn_id=t.turn_id AND i.item_id=t.final_agent_item_id WHERE t.thread_id=?1 AND t.turn_id=?2",params![session,turn],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional())?;
+    let row:Option<(Option<String>,Option<String>,Option<String>,Option<bool>)>=sql(history.query_row(FINAL_REPLY_SQL,params![session,turn],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional())?;
     let Some((kind,inner,phase,matched))=row else{return Err(AdapterError::new("observer_final_reply_pending"));};
-    Ok(kind=="agentMessage"&&inner.as_deref()==Some("agentMessage")&&phase.as_deref()==Some("final_answer")&&matched)
+    // 已知的阶段回报继续跳过。未知结构保留待处理轮次，避免未来版本静默丢失通知。
+    if kind.as_deref() == Some("agentMessage") && inner.as_deref() == Some("agentMessage") && matched == Some(true) {
+        match phase.as_deref() {
+            Some("final_answer") => return Ok(true),
+            Some("commentary") => return Ok(false),
+            _ => {}
+        }
+    }
+    Err(AdapterError::new("observer_reply_contract_changed"))
 }
 fn state_path(root:&Path,id:Uuid)->PathBuf { root.join(format!("codex-observer-{id}.sqlite")) }
-fn ledger(root:&Path,id:Uuid,security:&dyn DirectorySecurity,create:bool)->Result<Connection>{
+fn ledger(root:&Path,id:Uuid,security:&dyn DirectorySecurity,flags:OpenFlags)->Result<Connection>{
     security.verify(root).map_err(|_|err())?;
     let path=state_path(root,id);
     for suffix in ["", "-journal", "-wal", "-shm"] { reject_links(&PathBuf::from(format!("{}{suffix}",path.display()))).map_err(|_|err())?; }
-    let flags=OpenFlags::SQLITE_OPEN_READ_WRITE | if create {OpenFlags::SQLITE_OPEN_CREATE}else{OpenFlags::empty()};
     let db=sql(Connection::open_with_flags(path,flags))?;
     sql(db.busy_timeout(Duration::from_millis(50)))?;
     Ok(db)
@@ -73,7 +84,7 @@ pub fn completion_guard(root:&Path,id:Uuid,security:&dyn DirectorySecurity)->Res
 /// 已提交 enabled 是唯一完成来源所有权；损坏不能静默退回 Hook。
 pub fn owns(root:&Path,id:Uuid,security:&dyn DirectorySecurity)->Result<bool>{
     if !state_path(root,id).exists(){return Ok(false);}
-    let db=ledger(root,id,security,false)?;
+    let db=ledger(root,id,security,OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let exists:bool=sql(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",[],|r|r.get(0)))?;
     if !exists{return Ok(false);}
     Ok(sql(db.query_row("SELECT value FROM meta WHERE key='enabled'",[],|r|r.get::<_,String>(0)).optional())?==Some("1".into()))
@@ -91,14 +102,13 @@ fn source(home:&Path,name:&str)->Result<Connection>{
 }
 fn verified(context:&AdapterContext)->Result<&Path>{
     context.require_binding("codex")?;
-    if context.version!="0.166.0-alpha.5.1" {return Err(AdapterError::new("observer_version_unsupported"));}
     context.codex_home.as_deref().ok_or_else(err)
 }
 #[derive(Clone)]
 struct Turn { session:String, turn:String, status:String, completed:Option<i64> }
 /// 明确列及状态构成兼容契约；数量上限失败可见，不截断后推进水位。
 fn turns(db:&Connection)->Result<Vec<Turn>>{
-    let mut stmt=sql(db.prepare("SELECT thread_id,turn_id,status,completed_at FROM thread_turns ORDER BY thread_id,turn_id LIMIT 100001"))?;
+    let mut stmt=sql(db.prepare(TURNS_SQL))?;
     let rows=sql(stmt.query_map([],|r|Ok(Turn{session:r.get(0)?,turn:r.get(1)?,status:r.get(2)?,completed:r.get(3)?})))?;
     let rows=sql(rows.collect::<rusqlite::Result<Vec<_>>>())?;
     if rows.len()>100000 || rows.iter().any(|r|!matches!(r.status.as_str(),"completed"|"failed"|"interrupted"|"inProgress")){return Err(err());}
@@ -108,6 +118,42 @@ fn fingerprint(context:&AdapterContext)->Result<String>{
     let home=verified(context)?.canonicalize().map_err(|_|err())?;
     Ok(format!("{}|{}|{}",context.instance_id,context.version,home.display()).to_lowercase())
 }
+/// 版本是既有 Hook 登记信息。观察游标只绑定实例与规范化数据目录。
+fn check_identity(db: &Connection, id: Uuid, home: &Path) -> Result<()> {
+    let stored: String = sql(db.query_row("SELECT value FROM meta WHERE key='binding'", [], |row| row.get(0)))?;
+    let canonical_home = home.canonicalize().map_err(|_| err())?.display().to_string().to_lowercase();
+    let mut fields = stored.splitn(3, '|');
+    let stored_id = fields.next().and_then(|value| Uuid::parse_str(value).ok());
+    let registered_version = fields.next();
+    if stored_id != Some(id) || registered_version.is_none_or(str::is_empty)
+        || fields.next() != Some(canonical_home.as_str())
+    {
+        return Err(AdapterError::new("observer_binding_changed"));
+    }
+    Ok(())
+}
+
+/// 校验监听实际使用的查询。只准备语句，探测不读取问答正文，也不推进游标。
+fn observer_sources(home: &Path) -> Result<(Connection, Connection)> {
+    let history = source(home, "thread_history_1.sqlite")?;
+    let state = source(home, "state_5.sqlite")?;
+    for (db, query) in [(&history, TURNS_SQL), (&history, FINAL_REPLY_SQL), (&state, THREAD_METADATA_SQL)] {
+        db.prepare(query).map_err(|error| match error.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => err(),
+            _ => AdapterError::new("observer_schema_unsupported"),
+        })?;
+    }
+    Ok((history, state))
+}
+
+/// 设置页与后台复用实例和数据契约检查。检查既有绑定时不重建游标。
+pub fn validate_binding(root: &Path, id: Uuid, home: &Path, security: &dyn DirectorySecurity) -> Result<()> {
+    let db = ledger(root, id, security, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    check_identity(&db, id, home)?;
+    observer_sources(home)?;
+    Ok(())
+}
+
 /// 源事务快照内建立历史 terminal 基线和活动列表，最后一次提交同时开启仲裁。
 pub fn enable(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity)->Result<()> {
     let home=verified(context)?;
@@ -121,19 +167,16 @@ pub fn enable(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity
         let entry=entry.map_err(|_|err())?;let name=entry.file_name();let Some(name)=name.to_str()else{continue;};
         let Some(id)=name.strip_prefix("codex-observer-").and_then(|n|n.strip_suffix(".sqlite")).and_then(|n|Uuid::parse_str(n).ok())else{continue;};
         if owns(root,id,security)? {
-            let other=ledger(root,id,security,false)?;
+            let other=ledger(root,id,security,OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             let binding:String=sql(other.query_row("SELECT value FROM meta WHERE key='binding'",[],|r|r.get(0)))?;
             if binding.splitn(3,'|').nth(2)==Some(canonical_home.as_str()){return Err(AdapterError::new("observer_home_already_owned"));}
         }
     }
-    let mut history=source(home,"thread_history_1.sqlite")?;
-    let state=source(home,"state_5.sqlite")?;
-    sql(state.prepare("SELECT t.id,t.source,t.thread_source,t.cwd,t.title,t.name,t.project_id,t.originator,p.name FROM threads t LEFT JOIN projects p ON p.id=t.project_id LIMIT 0"))?;
-    sql(state.prepare("SELECT project_id,path FROM project_roots LIMIT 0"))?;
+    let (mut history, _) = observer_sources(home)?;
     let baseline_start=Utc::now().timestamp();
     let snapshot=sql(history.transaction())?;
     let rows=turns(&snapshot)?;
-    let mut db=ledger(root,context.instance_id,security,true)?;
+    let mut db=ledger(root,context.instance_id,security,OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE)?;
     let tx=sql(db.transaction())?;
     sql(tx.execute_batch("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS turns(session TEXT NOT NULL,turn TEXT NOT NULL,state TEXT NOT NULL,observed INTEGER,presence INTEGER,PRIMARY KEY(session,turn));"))?;
     let initialized:Option<String>=sql(tx.query_row("SELECT value FROM meta WHERE key='enabled'",[],|r|r.get(0)).optional())?;
@@ -146,27 +189,26 @@ pub fn enable(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity
     Ok(())
 }
 /// 仅提供中立通知和稳定接收标识；ACK 后由调用者确认，不把正文写入游标库。
-pub struct ObservedBatch {pub events:Vec<Observed>,pub incomplete:bool}
+pub struct ObservedBatch {pub events:Vec<Observed>,pub incomplete:bool,pub reply_contract_changed:bool}
 pub struct Observed { pub id:Uuid,pub output:AdapterOutput,pub presence_suppressed:bool, session:String,turn:String }
 /// 按所有已见主键而非秒级时间排序扫描，迟到同秒/先启动后结束均不会遗漏。
 pub fn poll(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity,presence:bool,include_answer:bool)->Result<ObservedBatch>{
     let home=verified(context)?;
-    let db=ledger(root,context.instance_id,security,false)?;
-    let expected:String=sql(db.query_row("SELECT value FROM meta WHERE key='binding'",[],|r|r.get(0)))?;
-    if expected!=fingerprint(context)?{return Err(AdapterError::new("observer_binding_changed"));}
+    let db = ledger(root, context.instance_id, security, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    check_identity(&db, context.instance_id, home)?;
     let enabled_at:String=sql(db.query_row("SELECT value FROM meta WHERE key='enabled_at'",[],|r|r.get(0)))?;
     let enabled_at:i64=enabled_at.parse().map_err(|_|err())?;
-    let history=source(home,"thread_history_1.sqlite")?;
-    let state=source(home,"state_5.sqlite")?;
+    let (history, state) = observer_sources(home)?;
     // 一次读取游标索引，避免每两秒对所有历史行反复 prepare/query（控制线程之外亦需有界）。
     let mut seen_stmt=sql(db.prepare("SELECT session,turn,state,observed,presence FROM turns"))?;
     let seen_rows=sql(seen_stmt.query_map([],|r|Ok(((r.get::<_,String>(0)?,r.get::<_,String>(1)?),(r.get::<_,String>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<bool>>(4)?)))))?;
     let prior_rows:std::collections::HashMap<_,_>=sql(seen_rows.collect::<rusqlite::Result<_>>())?;
     let mut result=Vec::new();
     let mut incomplete=false;
+    let mut reply_contract_changed=false;
     let deadline=std::time::Instant::now()+Duration::from_secs(3);
     for turn in turns(&history)? {
-        if std::time::Instant::now()>=deadline {return if result.is_empty(){Err(AdapterError::new("observer_scan_pending"))}else{Ok(ObservedBatch{events:result,incomplete:true})}; }
+        if std::time::Instant::now()>=deadline {return if result.is_empty(){Err(AdapterError::new("observer_scan_pending"))}else{Ok(ObservedBatch{events:result,incomplete:true,reply_contract_changed})}; }
         if turn.status=="inProgress"{continue;}
         let prior=prior_rows.get(&(turn.session.clone(),turn.turn.clone())).cloned();
         if prior.as_ref().is_some_and(|p|p.0=="seen"){continue;}
@@ -176,7 +218,7 @@ pub fn poll(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity,p
             sql(db.execute("INSERT INTO turns(session,turn,state) VALUES(?1,?2,'seen')",params![turn.session,turn.turn]))?;continue;
         }
         // 主表只读固定元数据列；创建线程时的 cli_version 不用于筛选续轮。
-        let meta:Option<(String,Option<String>,String,String,Option<String>,Option<String>)>=sql(state.query_row("SELECT t.source,t.thread_source,t.cwd,substr(COALESCE(NULLIF(t.name,''),t.title),1,512),p.name,t.originator FROM threads t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?1",[&turn.session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional())?;
+        let meta:Option<(String,Option<String>,String,String,Option<String>,Option<String>)>=sql(state.query_row(THREAD_METADATA_SQL,[&turn.session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional())?;
         let Some((origin,thread_source,cwd,title,project,originator))=meta else{return Err(err());};
         let origin_json:serde_json::Value=serde_json::from_str(&origin).unwrap_or_default();
         let guardian=thread_source.as_deref()==Some("guardian_review") || origin_json.pointer("/subagent/other").and_then(|v|v.as_str())==Some("guardian");
@@ -192,6 +234,7 @@ pub fn poll(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity,p
             let final_answer=if turn.status!="completed"{false}else{match final_reply(&history,&turn.session,&turn.turn){
                 Ok(value)=>value,
                 Err(e) if e.code=="observer_final_reply_pending"=>{incomplete=true;continue;},
+                Err(e) if e.code=="observer_reply_contract_changed"=>{reply_contract_changed=true;continue;},
                 Err(e)=>return Err(e),
             }};
             if !final_answer {sql(db.execute("UPDATE turns SET state='seen' WHERE session=?1 AND turn=?2",params![turn.session,turn.turn]))?;continue;}
@@ -211,11 +254,11 @@ pub fn poll(root:&Path,context:&AdapterContext,security:&dyn DirectorySecurity,p
         result.push(Observed{id,output,presence_suppressed:suppressed,session:turn.session,turn:turn.turn});
         if result.len()==32{break;}
     }
-    Ok(ObservedBatch{events:result,incomplete})
+    Ok(ObservedBatch{events:result,incomplete,reply_contract_changed})
 }
 /// 只在 core 返回持久化 ACK（包括同 ID 重放 ACK）后调用。
 pub fn acknowledge(root:&Path,id:Uuid,security:&dyn DirectorySecurity,item:&Observed)->Result<()> {
-    let db=ledger(root,id,security,false)?;
+    let db=ledger(root,id,security,OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     sql(db.execute("UPDATE turns SET state='seen' WHERE session=?1 AND turn=?2 AND state='pending'",params![item.session,item.turn]))?;
     Ok(())
 }
@@ -248,23 +291,31 @@ mod checks {
         let now=Utc::now().timestamp();
         history.execute("INSERT INTO thread_turns VALUES('session','old','completed',?1)",[now]).unwrap();
         history.execute("INSERT INTO thread_turns VALUES('session','active','inProgress',NULL)",[]).unwrap();
+        history.execute("ALTER TABLE thread_turns ADD COLUMN final_agent_item_id TEXT", []).unwrap();
         let context=AdapterContext{instance_id:Uuid::from_bytes([5;16]),adapter_id:"codex".into(),version:"0.166.0-alpha.5.1".into(),config_path:root.join("hooks.json"),executable_path:root.join("codex.exe"),registered_command:"hook".into(),codex_home:Some(root.into()),received_at:Utc::now(),content_key_available:false,include_question:false,supported_version:true};
         enable(root,&context,&Isolated).unwrap();assert!(owns(root,context.instance_id,&Isolated).unwrap());
         let mut second=context.clone();second.instance_id=Uuid::from_bytes([6;16]);assert_eq!(enable(root,&second,&Isolated).unwrap_err().code,"observer_home_already_owned");
         assert!(poll(root,&context,&Isolated,false,false).unwrap().events.is_empty());
+        // Use the recorded activation second so crossing a wall-clock second cannot make fixture turns historical.
+        let cursor = ledger(root, context.instance_id, &Isolated, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let activated: String = cursor.query_row("SELECT value FROM meta WHERE key='enabled_at'", [], |row| row.get(0)).unwrap();
+        let now: i64 = activated.parse().unwrap();
         history.execute("UPDATE thread_turns SET status='completed',completed_at=?1 WHERE turn_id='active'",[now]).unwrap();
-        history.execute("INSERT INTO thread_turns VALUES('session','same-second','completed',?1)",[now]).unwrap();
+        history.execute("INSERT INTO thread_turns VALUES('session','same-second','completed',?1,NULL)",[now]).unwrap();
         state.execute("INSERT INTO threads VALUES('worker','exec',NULL,'/project','worker','/absent',NULL,NULL,'respire-memory-worker',NULL)",[]).unwrap();
         state.execute("INSERT INTO threads VALUES('normal','{\"subagent\":{\"thread_spawn\":{\"agent_role\":\"respire_archive_review\"}}}','subagent','/project','normal','/absent',NULL,NULL,'codex_work_desktop',NULL)",[]).unwrap();
-        for session in ["worker","normal"] {history.execute("INSERT INTO thread_turns VALUES(?1,'done','completed',?2)",rusqlite::params![session,now]).unwrap();}
-        history.execute("ALTER TABLE thread_turns ADD COLUMN final_agent_item_id TEXT",[]).unwrap();
+        for session in ["worker","normal"] {history.execute("INSERT INTO thread_turns VALUES(?1,'done','completed',?2,NULL)",rusqlite::params![session,now]).unwrap();}
         for turn in ["active","same-second"] {
             history.execute("UPDATE thread_turns SET final_agent_item_id=?1 WHERE thread_id='session' AND turn_id=?1",[turn]).unwrap();
             let raw=serde_json::json!({"id":turn,"type":"agentMessage","phase":"final_answer","text":"fixture"}).to_string();
             history.execute("INSERT INTO thread_items VALUES('session',?1,?1,'agentMessage',?2)",params![turn,raw]).unwrap();
         }
         history.execute("INSERT INTO thread_turns VALUES('session','unready','completed',?1,NULL)",[now]).unwrap();
-        let first_batch=poll(root,&context,&Isolated,true,false).unwrap();assert!(first_batch.incomplete);
+        let mut upgraded = context.clone();
+        upgraded.version = "0.167.0-alpha.3.2".into();
+        upgraded.executable_path = root.join("new/codex.exe");
+        validate_binding(root, upgraded.instance_id, root, &Isolated).unwrap();
+        let first_batch=poll(root,&upgraded,&Isolated,true,false).unwrap();assert!(first_batch.incomplete);
         let first=first_batch.events;assert_eq!(first.len(),3);
         assert!(first.iter().any(|e|e.output.notification.as_ref().unwrap().agent_kind==AgentKind::Subagent));
         assert!(first.iter().all(|e|e.session!="worker"));
@@ -276,6 +327,22 @@ mod checks {
         history.execute("INSERT INTO thread_items VALUES('session','unready','later','agentMessage','{\"id\":\"later\",\"type\":\"agentMessage\",\"phase\":\"final_answer\"}')",[]).unwrap();
         let ready=poll(root,&context,&Isolated,false,false).unwrap();assert!(!ready.incomplete);assert_eq!(ready.events.len(),1);
         acknowledge(root,context.instance_id,&Isolated,&ready.events[0]).unwrap();
-        assert!(poll(root,&context,&Isolated,false,false).unwrap().events.is_empty());
+        assert!(poll(root,&upgraded,&Isolated,false,false).unwrap().events.is_empty());
+        std::fs::create_dir(root.join("new-home")).unwrap();
+        assert_eq!(
+            validate_binding(root, upgraded.instance_id, &root.join("new-home"), &Isolated).unwrap_err().code,
+            "observer_binding_changed"
+        );
+        history.execute("INSERT INTO thread_turns VALUES('session','future','completed',?1,'future')", [now]).unwrap();
+        history.execute("INSERT INTO thread_items VALUES('session','future','future','agentMessage','{\"type\":\"agentMessage\",\"phase\":\"future\"}')", []).unwrap();
+        let changed = poll(root, &upgraded, &Isolated, false, false).unwrap();
+        assert!(changed.events.is_empty() && changed.reply_contract_changed);
+        history.execute("UPDATE thread_items SET item_json=json_set(item_json,'$.phase','final_answer','$.id','future') WHERE item_id='future'", []).unwrap();
+        assert_eq!(poll(root, &upgraded, &Isolated, false, false).unwrap().events.len(), 1);
+        history.execute("DROP TABLE thread_items", []).unwrap();
+        assert_eq!(
+            poll(root, &upgraded, &Isolated, false, false).err().unwrap().code,
+            "observer_schema_unsupported"
+        );
     }
 }
