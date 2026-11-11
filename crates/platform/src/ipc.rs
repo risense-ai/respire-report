@@ -224,12 +224,21 @@ mod win {
         pub fn poll(&mut self, handle: impl FnOnce(Request) -> Response) -> Result<()> {
             unsafe {
                 if self.connected.is_none() {
-                    if ConnectNamedPipe(self.handle.0, null_mut()) != 0
-                        || GetLastError() == ERROR_PIPE_CONNECTED
-                    {
-                        self.connected = Some(Instant::now());
-                    } else {
+                    // 非阻塞管道首次进入监听时也可能返回成功，须等到客户端实际连接。
+                    if ConnectNamedPipe(self.handle.0, null_mut()) != 0 {
                         return Ok(());
+                    }
+                    match GetLastError() {
+                        ERROR_PIPE_CONNECTED => self.connected = Some(Instant::now()),
+                        ERROR_PIPE_LISTENING => return Ok(()),
+                        ERROR_NO_DATA => {
+                            // 客户端在轮询前关闭。断开旧连接，下次轮询重新监听。
+                            if DisconnectNamedPipe(self.handle.0) == 0 {
+                                return Err(PlatformError("ipc_disconnect_failed"));
+                            }
+                            return Ok(());
+                        }
+                        _ => return Err(PlatformError("ipc_connect_failed")),
                     }
                 }
                 if self.responded {
@@ -272,5 +281,28 @@ mod win {
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn pipe_accepts_new_peer_after_previous_peer_leaves_before_poll() {
+        let name = format!(r"\\.\pipe\AgentNotify-test-{}", uuid::Uuid::new_v4());
+        let mut server = Server::bind(&name).unwrap();
+        let name = wide(&name);
+        let unexpected = |_| panic!("abandoned peer cannot submit a request");
+        server.poll(unexpected).unwrap();
+
+        // 客户端在服务端下一次轮询前关闭，Windows 要求显式断开旧连接。
+        unsafe {
+            let peer = CreateFileW(
+                name.as_ptr(), GENERIC_READ | GENERIC_WRITE, 0, null(), OPEN_EXISTING, 0, null_mut(),
+            );
+            assert_ne!(peer, INVALID_HANDLE_VALUE);
+            drop(Handle(peer));
+        }
+        server.poll(unexpected).unwrap();
+        server.poll(unexpected).unwrap();
+
+        assert_ne!(unsafe { WaitNamedPipeW(name.as_ptr(), 20) }, 0);
     }
 }
